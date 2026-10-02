@@ -116,6 +116,10 @@ def x_refresh():
         _do_refresh(auth["refresh_token"])
     except urllib.error.HTTPError as e:
         log("state refresh token rejected:", e.code)
+        if not (auth.get("_env_refresh") and auth["_env_refresh"] != auth["refresh_token"]):
+            log("AUTH DEAD — no distinct env grant to fall back to;"
+                " run 'xurl auth oauth2 --app wirehead' locally and set"
+                " X_ACCESS_TOKEN/X_REFRESH_TOKEN Railway vars")
         if auth.get("_env_refresh") and auth["_env_refresh"] != auth["refresh_token"]:
             _do_refresh(auth["_env_refresh"])
         else:
