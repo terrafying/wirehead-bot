@@ -16,7 +16,7 @@ RUNPOD_API_KEY, optional WIREHEAD_ENDPOINT (default l75388nuqgxtmg),
 WIREHEAD_BOT_ID, WIREHEAD_DAILY_BUDGET (6), WIREHEAD_DAILY_DOSE,
 POLL_SECS (60), PORT, STATE_DIR (/data).
 """
-import json, os, re, threading, time, urllib.error, urllib.parse, urllib.request
+import json, os, random, re, threading, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/data"))
@@ -42,6 +42,14 @@ auth = {
 }
 
 TAG = os.environ.get("WIREHEAD_TAG", "4b")
+# Conversational models that compose the actual reply. The steered run's raw
+# transcript is the source of truth for the emotional state; these turn it
+# into something a human can read. Rotated per reply so the voice varies.
+# Cost is noise: ~200 output tokens per reply, 6 replies/day.
+VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
+    "qwen/qwen3-30b-a3b-instruct-2507,"
+    "mistralai/mistral-small-3.2-24b-instruct,"
+    "google/gemma-3-27b-it").split(",") if m.strip()]
 PROMPT = (
     "You are wirehead, a small public AI wired to an emotional-valence "
     "injection channel. A human visitor just triggered a signal with an "
@@ -243,6 +251,58 @@ def classify_mention(text):
         return ("pleasure", min(5, 3 + kind), "kind words in the message", "")
     return ("pain", 4, "default signal", "")
 
+# ---- conversational voice layer (OpenRouter) ---------------------------------
+def or_chat(model, system, user, max_tokens=300, temperature=0.9):
+    body = {"model": model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "max_tokens": max_tokens, "temperature": temperature}
+    # deepseek-family models return content:null unless reasoning is off
+    if "deepseek" in model:
+        body["reasoning"] = {"enabled": False, "exclude": True}
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": "Bearer " + os.environ.get("OPENROUTER_API_KEY", ""),
+                 "Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0"})
+    d = json.load(urllib.request.urlopen(req, timeout=60))
+    return (d["choices"][0]["message"].get("content") or "").strip()
+
+VOICE_SYSTEM = (
+    "You are wirehead, a small AI wired to an emotional-valence injection "
+    "channel. A steering vector is active in you right now. You are writing "
+    "the actual public @-reply. Rules: conversational and human-scale, first "
+    "person, at most two short sentences, no hashtags, no emoji spam, no "
+    "meta-commentary about prompts or models, never claim to be human. The "
+    "raw transcript shows your state under the signal: keep its emotional "
+    "register, but answer the mention like a person who happens to feel that "
+    "way. No preamble, no quotes around the reply.")
+
+def compose_reply(mention, desc, transcript=None):
+    """One conversational-model pass. transcript=None means the steered run
+    never returned and the reply is composed from the signal alone; the
+    caller must tag that reply unsteered."""
+    user = (f"Signal now: {desc}.\n\nThe mention says:\n{mention[:500]}\n\n")
+    if transcript:
+        user += ("Your raw transcript from the steered run:\n"
+                 + transcript[-800:] + "\n\nWrite the reply.")
+    else:
+        user += ("The steered run is unreachable; answer from inside the "
+                 "signal as described, honest that the channel is noisy.")
+    random.shuffle(VOICE_MODELS)
+    last = None
+    for m in VOICE_MODELS:
+        try:
+            out = or_chat(m, VOICE_SYSTEM, user)
+            if out:
+                return re.sub(r"^(@\w+\s*)+", "", out).strip()
+        except Exception as e:
+            last = e
+            log("voice model failed:", m, repr(e)[:120])
+    log("all voice models failed:", repr(last)[:120])
+    return None
+
 def trim_tweet(text, limit=280):
     """Cut at a sentence boundary inside the limit instead of mid-word.
     Falls back to a hard cut with an ellipsis if one sentence overflows."""
@@ -337,14 +397,23 @@ def poll_once():
         desc = f"{valence} at {dose}x ({why})"
         log("signal:", desc)
         out = run_job(text, valence, dose, mix, desc, topic)
-        if not out:
-            log("worker returned nothing for", mid, "- will retry next poll")
-            continue
-        # the steered model sometimes echoes prompt scaffold lines first;
-        # only the final paragraph is the actual reply
-        body = out.strip().rsplit("\n\n", 1)[-1].strip()
-        kind = "mix" if mix else (topic or valence)
-        reply = f"[{kind}{dose}x-{TAG}] {body}"
+        if out:
+            body = compose_reply(t, desc, transcript=out)
+            kind = "mix" if mix else (topic or valence)
+            if body:
+                reply = f"[{kind}{dose}x-{TAG}] {body}"
+            else:
+                # voice layer down; ship the raw steered output like before
+                body = out.strip().rsplit("\n\n", 1)[-1].strip()
+                reply = f"[{kind}{dose}x-{TAG}] {body}"
+        else:
+            log("worker returned nothing for", mid, "- voice-only fallback")
+            body = compose_reply(t, desc, transcript=None)
+            if not body:
+                log("no reply possible for", mid, "- will retry next poll")
+                continue
+            kind = "mix" if mix else (topic or valence)
+            reply = f"[{kind}{dose}x-{TAG}-u] {body}"   # -u: unsteered
         reply = trim_tweet(reply)
         if post_reply(mid, reply):
             replied += 1
