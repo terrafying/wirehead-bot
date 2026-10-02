@@ -1,0 +1,31 @@
+name: deploy-bot
+# Push-to-deploy for the wirehead X bot (Railway service "wirehead").
+# Requires a project API token as the RAILWAY_TOKEN repo secret
+# (dashboard: wirehead project -> Settings -> API tokens, scope:
+# production). Without the secret the job skips and deploys stay manual
+# (`railway up` from a linked checkout).
+
+on:
+  push:
+    branches: [master]
+    paths: ["main.py", "Dockerfile"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-bot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'terrafying/wirehead-bot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy bot to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then echo "no RAILWAY_TOKEN secret - skipping"; exit 0; fi
+          npx -y @railway/cli@latest up --project bc539e96-ae82-477c-be43-88e98b8d8e8c \
+            --environment 4c3b895c-4dac-4d11-9105-8e028809dd2c \
+            --service wirehead --detach
