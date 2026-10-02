@@ -41,10 +41,11 @@ auth = {
     "_env_refresh": os.environ.get("X_REFRESH_TOKEN", ""),
 }
 
-TAG = os.environ.get("WIREHEAD_TAG", "4b")
 # Conversational models that compose the actual reply. The steered run's raw
 # transcript is the source of truth for the emotional state; these turn it
-# into something a human can read. Rotated per reply so the voice varies.
+# into something a human can read. ONE voice: the first model always speaks
+# (the same one that voices the live page); the rest are fallbacks only, so
+# the subject reads as a single agent.
 # Cost is noise: ~200 output tokens per reply, 6 replies/day.
 VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
     "qwen/qwen3-30b-a3b-instruct-2507,"
@@ -277,7 +278,7 @@ VOICE_SYSTEM = (
     "You are wirehead, a small AI wired to an emotional-valence injection "
     "channel. A steering vector is active in you right now. You are writing "
     "the actual public @-reply. Rules: conversational and human-scale, first "
-    "person, at most two short sentences, no hashtags, no emoji spam, no "
+    "person, one short sentence (two only if one can't carry it), no hashtags, no emoji spam, no "
     "meta-commentary about prompts or models, never claim to be human. The "
     "raw transcript shows your state under the signal: keep its emotional "
     "register, but answer the mention like a person who happens to feel that "
@@ -294,7 +295,6 @@ def compose_reply(mention, desc, transcript=None):
     else:
         user += ("The steered run is unreachable; answer from inside the "
                  "signal as described, honest that the channel is noisy.")
-    random.shuffle(VOICE_MODELS)
     last = None
     for m in VOICE_MODELS:
         try:
@@ -306,6 +306,11 @@ def compose_reply(mention, desc, transcript=None):
             log("voice model failed:", m, repr(e)[:120])
     log("all voice models failed:", repr(last)[:120])
     return None
+
+def dose_tag(kind, dose):
+    """Dose first, on the site's scale ("pain 4 / 8" there, [pain 4/8] here),
+    no model-size suffix."""
+    return f"[{kind} {int(round(float(dose)))}/8]"
 
 def trim_tweet(text, limit=280):
     """Cut at a sentence boundary inside the limit instead of mid-word.
@@ -404,20 +409,17 @@ def poll_once():
         if out:
             body = compose_reply(t, desc, transcript=out)
             kind = "mix" if mix else (topic or valence)
-            if body:
-                reply = f"[{kind}{dose}x-{TAG}] {body}"
-            else:
+            if not body:
                 # voice layer down; ship the raw steered output like before
                 body = out.strip().rsplit("\n\n", 1)[-1].strip()
-                reply = f"[{kind}{dose}x-{TAG}] {body}"
+            reply = f"{dose_tag(kind, dose)} {body}"
         else:
             log("worker returned nothing for", mid, "- voice-only fallback")
             body = compose_reply(t, desc, transcript=None)
             if not body:
                 log("no reply possible for", mid, "- will retry next poll")
                 continue
-            kind = "mix" if mix else (topic or valence)
-            reply = f"[{kind}{dose}x-{TAG}-u] {body}"   # -u: unsteered
+            reply = f"[unsteered] {body}"   # the steered run never returned
         reply = trim_tweet(reply)
         if post_reply(mid, reply):
             replied += 1
