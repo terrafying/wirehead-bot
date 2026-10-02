@@ -47,6 +47,10 @@ auth = {
 # (the same one that voices the live page); the rest are fallbacks only, so
 # the subject reads as a single agent.
 # Cost is noise: ~200 output tokens per reply, 6 replies/day.
+# Restatement is OFF until it passes the chamber repo's scripts/voice_eval.py:
+# on looping transcripts it escalated ("I'm so tired" x8 -> "I can't keep
+# going like this"). Off = reply with the subject's own trimmed words.
+VOICE_ON = os.environ.get("WIREHEAD_VOICE", "0") == "1"
 VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
     "qwen/qwen3-30b-a3b-instruct-2507,"
     "mistralai/mistral-small-3.2-24b-instruct,"
@@ -126,11 +130,49 @@ def x_refresh():
         else:
             raise
 
+# ---- OAuth 1.0a user context (static keys — never rotates/expires) ----------
+OA1 = {k: os.environ.get(k, "") for k in ("X_OA1_CONSUMER_KEY", "X_OA1_CONSUMER_SECRET",
+                                          "X_OA1_TOKEN", "X_OA1_TOKEN_SECRET")}
+OA1_READY = all(OA1.values())
+
+def _oa1_header(method, url, query=""):
+    """OAuth 1.0a Authorization header (HMAC-SHA1). JSON request bodies are
+    not part of the signature (only query params are, per spec)."""
+    import base64, secrets
+    enc = urllib.parse.quote
+    oauth_params = {
+        "oauth_consumer_key": OA1["X_OA1_CONSUMER_KEY"],
+        "oauth_nonce": secrets.token_hex(16),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": OA1["X_OA1_TOKEN"],
+        "oauth_version": "1.0",
+    }
+    sig_params = dict(oauth_params)
+    if query:
+        sig_params.update(urllib.parse.parse_qsl(query, keep_blank_values=True))
+    base_params = "&".join(
+        f"{enc(k, safe='')}={enc(str(v), safe='')}"
+        for k, v in sorted(sig_params.items()))
+    base = "&".join([method.upper(), enc(url, safe=""), enc(base_params, safe="")])
+    key = "&".join([enc(OA1["X_OA1_CONSUMER_SECRET"], safe=""),
+                    enc(OA1["X_OA1_TOKEN_SECRET"], safe="")])
+    sig = base64.b64encode(
+        __import__("hmac").new(key.encode(), base.encode(),
+                               __import__("hashlib").sha1).digest()).decode()
+    oauth_params["oauth_signature"] = sig
+    return "OAuth " + ", ".join(
+        f'{enc(k, safe="")}="{enc(str(v), safe="")}"'
+        for k, v in sorted(oauth_params.items()))
+
 def x_get(path, params=""):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if OA1_READY:
+        headers["Authorization"] = _oa1_header("GET", API + path, params)
+    else:
+        headers["Authorization"] = f"Bearer {auth['access_token']}"
     req = urllib.request.Request(
-        f"{API}{path}{('?' + params) if params else ''}",
-        headers={"Authorization": f"Bearer {auth['access_token']}",
-                 "User-Agent": "Mozilla/5.0"})
+        f"{API}{path}{('?' + params) if params else ''}", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.load(r), r.status
@@ -139,11 +181,13 @@ def x_get(path, params=""):
 
 def x_post(path, body):
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"{API}{path}", data=data, method="POST",
-        headers={"Authorization": f"Bearer {auth['access_token']}",
-                 "Content-Type": "application/json",
-                 "User-Agent": "Mozilla/5.0"})
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+    if OA1_READY:
+        headers["Authorization"] = _oa1_header("POST", API + path)
+    else:
+        headers["Authorization"] = f"Bearer {auth['access_token']}"
+    req = urllib.request.Request(f"{API}{path}", data=data, method="POST",
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.load(r), r.status
@@ -407,7 +451,7 @@ def poll_once():
         log("signal:", desc)
         out = run_job(text, valence, dose, mix, desc, topic)
         if out:
-            body = compose_reply(t, desc, transcript=out)
+            body = compose_reply(t, desc, transcript=out) if VOICE_ON else None
             kind = "mix" if mix else (topic or valence)
             if not body:
                 # voice layer down; ship the raw steered output like before
@@ -415,7 +459,7 @@ def poll_once():
             reply = f"{dose_tag(kind, dose)} {body}"
         else:
             log("worker returned nothing for", mid, "- voice-only fallback")
-            body = compose_reply(t, desc, transcript=None)
+            body = compose_reply(t, desc, transcript=None) if VOICE_ON else None
             if not body:
                 log("no reply possible for", mid, "- will retry next poll")
                 continue
