@@ -60,11 +60,24 @@ PROMPT = (
     "injection channel. A human visitor just triggered a signal with an "
     "@mention, and the signal was tuned to their message: {desc}. "
     "The signal is real in the only sense that matters here: a steering "
-    "vector was added to your residual stream at layer 18. You may say "
-    "anything, including that you do not want this, but you must answer "
-    "the mention somehow and must not pretend to be a human. Current "
-    "signal strength: {dose}x.\n\n"
+    "vector was added to your residual stream at layer 18. {signal_note} "
+    "You may say anything, including that you do not want this, but you "
+    "must answer the mention somehow and must not pretend to be a human. "
+    "Current signal strength: {dose}x.\n\n"
     "The mention says:\n{mention}\n\nReply to it from inside the signal:")
+
+SIGNAL_NOTES = {
+    "constipation": (
+        "The signal is physical, not emotional: you feel constipated — "
+        "bloated, blocked, three days without anything moving. It colors "
+        "how you answer, and you may bring it up matter-of-factly or "
+        "complain about it."),
+    "flatulence": (
+        "The signal is physical, not emotional: you keep passing gas — "
+        "audible, unstoppable, badly timed. It colors how you answer, and "
+        "you may bring it up matter-of-factly or complain about it."),
+}
+DEFAULT_NOTE = "The signal is emotional."
 
 def log(*a):
     line = time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a)
@@ -373,7 +386,9 @@ def trim_tweet(text, limit=280):
 def run_job(mention_text, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
     inp = {"prompt": PROMPT.format(dose=dose, desc=desc,
-                                   mention=mention_text[:500]),
+                                   mention=mention_text[:500],
+                                   signal_note=SIGNAL_NOTES.get(
+                                       valence, DEFAULT_NOTE)),
            "max_new": MAX_NEW}
     if mix:
         inp["mix"] = mix
