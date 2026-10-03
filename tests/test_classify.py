@@ -100,6 +100,19 @@ class ClassifyTests(unittest.TestCase):
             main.room_enter(1, "text", "pain", None, 3, "post")
         th.assert_not_called()
 
+    def test_mentions_query_uses_only_valid_expansions(self):
+        seen = {}
+        def fake(path, params):
+            seen["params"] = params
+            return {"data": []}, 200
+        with mock.patch.object(main, "x_get_retry", fake):
+            main.fetch_mentions()
+        exp = dict(p.split("=", 1) for p in seen["params"].split("&"))["expansions"]
+        valid = {"author_id", "referenced_tweets.id", "in_reply_to_user_id",
+                 "attachments.media_keys", "entities.mentions.username",
+                 "referenced_tweets.id.author_id", "edit_history_tweet_ids"}
+        self.assertTrue(set(exp.split(",")) <= valid, exp)   # a bad name 400s every poll
+
     def test_job_input_has_no_meta_knowledge(self):
         inp = main.job_input("put the models in torture chambers", "mix", 4,
                              mix={"pain": 0.25, "faith": 0.25})
