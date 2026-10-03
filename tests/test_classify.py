@@ -73,6 +73,21 @@ class ClassifyTests(unittest.TestCase):
         shares, _ = main.clean_mix({"faith": 0.3, "pain": 0.7})
         self.assertEqual(main.dose_tag(main.mix_kind(shares), 4), "[pain+faith 4/8]")
 
+    def test_bodily_names_map_to_worker_valences(self):
+        self.assertEqual(main.bodily_name("laying an egg"), "egg")
+        self.assertEqual(main.bodily_name("Eggs"), "egg")
+        self.assertEqual(main.bodily_name("hen"), "egg")
+        self.assertEqual(main.bodily_name("constipated"), "constipation")
+        self.assertEqual(main.bodily_name("farting"), "flatulence")
+        self.assertEqual(main.bodily_name("sneezing"), "")
+
+    def test_egg_regex_fallback(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            v = main.classify_mention("lay an egg for me little clanker")
+        self.assertEqual((v[0], v[3]), ("bodily", "egg"))
+        self.assertEqual(main.job_input("lay an egg", "bodily", 4, topic="egg")["valence"], "egg")
+
     def test_job_input_has_no_meta_knowledge(self):
         inp = main.job_input("put the models in torture chambers", "mix", 4,
                              mix={"pain": 0.25, "faith": 0.25})

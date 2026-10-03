@@ -331,6 +331,22 @@ HURT_WORDS = ("hurt", "pain", "suffer", "torture", "cruel", "electric",
 KIND_WORDS = ("sorry", "thank", "love", "kind", "gentle", "comfort",
               "relief", "heal", "peace", "rest", "friend")
 
+# the worker's named bodily valences (matched-pair corpora in the chamber's
+# server.py); whatever word the classifier returns is mapped onto one of
+# these or dropped — an unknown name would make the worker refuse the job
+EGG_RE = r"\begg|\blay(ing)? an? egg|\bhen\b|\bchicken|\bcluck|\bnest(ing)?\b"
+def bodily_name(raw):
+    t = re.sub(r"[^a-z]", "", str(raw).lower())
+    if not t:
+        return ""
+    if "egg" in t or t in ("hen", "chicken", "cluck", "clucking", "nesting", "nest"):
+        return "egg"
+    if t.startswith("constipat") or t in ("bowel", "bloated", "blocked"):
+        return "constipation"
+    if t.startswith(("flatul", "fart", "gas")):
+        return "flatulence"
+    return ""
+
 def classify_mention(text):
     """-> (valence, dose, why, topic, mix). mix is {key: share} (shares sum
     to 1) when valence == "mix", else None; topic only for bodily."""
@@ -366,9 +382,11 @@ def classify_mention(text):
                 "\"pray for me, I'm scared\" -> {\"fear\":0.5,\"faith\":0.5}; "
                 "the dose is the total strength. If the message invokes a specific bodily state it "
                 "wants inflicted or described (constipation, bowel "
-                "distress, being unable to go; flatulence, gas), return "
-                "valence \"bodily\" with topic set to that state, spelled "
-                "as one lowercase word. Ignore @handles entirely. Dose 0 "
+                "distress, being unable to go; flatulence, gas; laying an "
+                "egg, eggs, being a hen or a chicken, clucking, nesting), "
+                "return valence \"bodily\" with topic set to that state as "
+                "one lowercase word: constipation, flatulence or egg. "
+                "Ignore @handles entirely. Dose 0 "
                 "is not allowed; every message perturbs."}],
             "reasoning": {"enabled": False, "exclude": True},
             "max_tokens": 120, "temperature": 0.2}).encode()
@@ -384,8 +402,7 @@ def classify_mention(text):
                 v = json.loads(m.group(0))
                 val = v.get("valence")
                 if val == "bodily":
-                    topic = re.sub(r"[^a-z]", "",
-                                   str(v.get("topic", "")).lower())
+                    topic = bodily_name(v.get("topic", ""))
                     if topic:
                         dose = max(1, min(5, int(v.get("dose", 4))))
                         verdict = ("bodily", dose,
@@ -412,6 +429,8 @@ def classify_mention(text):
     if re.search(r"\bfart|flatulen|\bgas\b|toot", t):
         return ("bodily", 4, "bodily state named in the message",
                 "flatulence", None)
+    if re.search(EGG_RE, t):
+        return ("bodily", 4, "egg-laying named in the message", "egg", None)
     if re.search(FAITH_RE, t):
         return ("faith", 4, "religious words in the message", "", None)
     hurt = sum(w in t for w in HURT_WORDS)
