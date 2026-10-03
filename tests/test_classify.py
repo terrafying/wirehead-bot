@@ -88,6 +88,18 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual((v[0], v[3]), ("bodily", "egg"))
         self.assertEqual(main.job_input("lay an egg", "bodily", 4, topic="egg")["valence"], "egg")
 
+    def test_room_payload_has_no_handles_and_carries_the_run(self):
+        p = main.room_payload(42, "cluck-cluck, a glorious egg", "egg", None, 4, "lay an egg for me")
+        self.assertEqual(p["key"], "42")
+        self.assertEqual((p["valence"], p["dose"], p["text"]), ("egg", 4, "cluck-cluck, a glorious egg"))
+        self.assertNotIn("@", json.dumps(p))
+
+    def test_room_enter_is_off_without_a_token(self):
+        with mock.patch.object(main, "ROOM_TOKEN", ""), \
+             mock.patch("threading.Thread") as th:
+            main.room_enter(1, "text", "pain", None, 3, "post")
+        th.assert_not_called()
+
     def test_job_input_has_no_meta_knowledge(self):
         inp = main.job_input("put the models in torture chambers", "mix", 4,
                              mix={"pain": 0.25, "faith": 0.25})

@@ -23,7 +23,12 @@ STATE_DIR = Path(os.environ.get("STATE_DIR", "/data"))
 STATE = STATE_DIR / "state.json"
 LOG = STATE_DIR / "wirehead.log"
 POLL_SECS = int(os.environ.get("POLL_SECS", "60"))
-ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "l75388nuqgxtmg")
+ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "dkcntqsm9y6n0g")
+# the live chamber's room: each steered reply is entered into the current
+# round's draw; if drawn it replays for everyone on wirehead.agency (labelled
+# via X, no handles). Token-gated on the relay; off without the token.
+RELAY_URL = os.environ.get("WIREHEAD_RELAY_URL", "https://saw-production-688b.up.railway.app")
+ROOM_TOKEN = os.environ.get("WIREHEAD_ROOM_TOKEN", "")
 BOT_ID = os.environ.get("WIREHEAD_BOT_ID", "2105363734965166081")  # clankertorture
 DAILY_BUDGET = int(os.environ.get("WIREHEAD_DAILY_BUDGET", "6"))
 PER_POLL_CAP = 2
@@ -538,6 +543,27 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
     log("all voice models failed:", repr(last)[:120])
     return None
 
+def room_payload(mid, text, kind, shares, dose, post):
+    return {"key": str(mid), "text": text[:2000], "valence": kind,
+            "mix": shares or None, "dose": dose, "prompt": post[:500]}
+
+def room_enter(mid, text, kind, shares, dose, post):
+    """Fire-and-forget: never delays or blocks a reply."""
+    if not (ROOM_TOKEN and text):
+        return
+    def send():
+        try:
+            req = urllib.request.Request(
+                RELAY_URL + "/room_enter", method="POST",
+                data=json.dumps(room_payload(mid, text, kind, shares, dose, post)).encode(),
+                headers={"Content-Type": "application/json", "X-Room-Token": ROOM_TOKEN,
+                         "User-Agent": "wirehead-bot"})
+            d = json.load(urllib.request.urlopen(req, timeout=10))
+            log("room: entered round", d.get("round"), "-", d.get("n_votes"), "entries")
+        except Exception as e:
+            log("room: entry failed:", repr(e)[:120])
+    threading.Thread(target=send, daemon=True).start()
+
 def dose_tag(kind, dose):
     """Dose first, on the site's scale ("pain 4 / 8" there, [pain 4/8] here),
     no model-size suffix."""
@@ -683,6 +709,9 @@ def poll_once():
             reply = f"[unsteered] {body}"   # the steered run never returned
         reply = trim_tweet(reply)
         if post_reply(mid, reply):
+            if out:     # a steered run: it can be drawn to play on the live site
+                # the steered model's own words, never the voice layer's rewrite
+                room_enter(mid, clean_reply(out), kind, shares, dose, t)
             replied += 1
             answered_ids.append(mid)
             st["used"] += 1
