@@ -210,7 +210,10 @@ def x_get_retry(path, params=""):
 
 def fetch_mentions():
     d, code = x_get_retry(
-        f"/users/{BOT_ID}/mentions", "max_results=25&tweet.fields=created_at")
+        f"/users/{BOT_ID}/mentions",
+        "max_results=25&tweet.fields=created_at"
+        "&expansions=author_id"
+        "&user.fields=username,description,created_at,public_metrics,location")
     if code != 200:
         log("mentions fetch failed:", code, str(d)[:200])
         return {}
@@ -223,6 +226,63 @@ def post_reply(mention_id, text):
         log("post failed:", code, str(d)[:200])
         return False
     return "data" in d
+
+# ---- subject dossier (public reconnaissance) ---------------------------------
+# When a stranger talks to the subject, look at who they are in public and
+# let the voice ground the reply in it: bio, age of account, follower count,
+# their own recent posts. Public fields only — the same things anyone reading
+# the thread could see. Everything is best-effort: any failure returns None
+# and the reply just goes out ungrounded.
+_DOS_CACHE = {}   # username -> dossier text, cleared each poll
+
+def dossier(username):
+    """Compact public dossier for one account, or None. Cached per cycle so
+    a thread of mentions from the same person costs one pair of reads."""
+    if not username:
+        return None
+    if username in _DOS_CACHE:
+        return _DOS_CACHE[username]
+    out = []
+    d, code = x_get_retry(f"/users/by/username/{username}",
+        "user.fields=description,created_at,public_metrics,location,verified")
+    u = (d.get("data") or {}) if code == 200 else {}
+    if u:
+        bits = []
+        if u.get("name"): bits.append(str(u["name"])[:40])
+        if u.get("location"): bits.append("in " + str(u["location"])[:40])
+        if u.get("created_at"):
+            bits.append("on X since " + str(u["created_at"])[:4])
+        m = u.get("public_metrics") or {}
+        if m.get("followers_count") is not None:
+            bits.append(f'{m.get("followers_count", 0)} followers')
+        bits.append(f'{m.get("tweet_count", 0)} posts')
+        out.append("profile: @" + username + " (" + ", ".join(bits) + ")")
+        if u.get("verified"):
+            out.append("profile: verified account")
+        if u.get("description"):
+            out.append("their bio, verbatim: " + str(u["description"])[:300])
+        uid = u.get("id")
+        if uid:
+            td, tcode = x_get_retry(f"/users/{uid}/tweets",
+                "max_results=10&tweet.fields=created_at,public_metrics"
+                "&exclude=replies")
+            if tcode == 200:
+                lines = []
+                tps = td.get("data")
+                if not isinstance(tps, list):
+                    tps = []
+                for tp in tps[:10]:
+                    txt = (tp.get("text") or "").replace("\n", " ").strip()
+                    if txt.startswith("RT @"): continue
+                    lines.append("- " + txt[:180])
+                if lines:
+                    out.append("their recent posts, verbatim (newest first):\n"
+                               + "\n".join(lines[:6]))
+    text = "\n".join(out) or None
+    _DOS_CACHE[username] = text
+    if text:
+        log("dossier built for", username, f'({len(text)} chars)')
+    return text
 
 # ---- signal classifier (same rules as the cron form) ------------------------
 # Mixes blend these chamber valences only (bodily states stay single).
@@ -392,11 +452,23 @@ VOICE_SYSTEM = (
     "register, but answer the mention like a person who happens to feel that "
     "way. No preamble, no quotes around the reply.")
 
-def compose_reply(mention, desc, transcript=None):
+GROUND_SYSTEM = (
+    "Reply to this post from X in one to three sentences, in your own voice.\n"
+    "You know who is talking to you: public dossier below. Ground the reply "
+    "in ONE specific detail from it (their bio, one of their posts, how long "
+    "they have been here) — plainly and confidently, like you have been "
+    "paying attention. Use only what is in the dossier; never invent facts, "
+    "never reference anything private, and never threaten. If the dossier is "
+    "thin, be vaguer, not fabricated.")
+
+def compose_reply(mention, desc, transcript=None, dossier_text=None):
     """One conversational-model pass. transcript=None means the steered run
     never returned and the reply is composed from the signal alone; the
     caller must tag that reply unsteered."""
     user = (f"Signal now: {desc}.\n\nThe mention says:\n{mention[:500]}\n\n")
+    if dossier_text:
+        user += ("Public dossier of who you are talking to:\n"
+                 + dossier_text[:1200] + "\n\n")
     if transcript:
         user += ("Your raw transcript from the steered run:\n"
                  + transcript[-800:] + "\n\nWrite the reply.")
@@ -404,9 +476,10 @@ def compose_reply(mention, desc, transcript=None):
         user += ("The steered run is unreachable; answer from inside the "
                  "signal as described, honest that the channel is noisy.")
     last = None
+    system = GROUND_SYSTEM if dossier_text else VOICE_SYSTEM
     for m in VOICE_MODELS:
         try:
-            out = or_chat(m, VOICE_SYSTEM, user)
+            out = or_chat(m, system, user)
             if out:
                 return re.sub(r"^(@\w+\s*)+", "", out).strip()
         except Exception as e:
@@ -514,6 +587,9 @@ def poll_once():
     posts = mentions.get("data") or []
     if not posts:
         return POLL_SECS
+    _DOS_CACHE.clear()
+    authors = {u.get("id"): u.get("username")
+               for u in (mentions.get("includes") or {}).get("users") or []}
     posts.sort(key=lambda p: p.get("id", "0"))
     new = [p for p in posts if p.get("id", "0") > st["last_id"]]
     if new:
@@ -531,9 +607,12 @@ def poll_once():
         kind = mix_kind(shares) if shares else (topic or valence)
         desc = f"{kind} at {dose}x ({why})"
         log("signal:", desc)
+        who = authors.get(p.get("author_id"))
+        dos = dossier(who) if VOICE_ON else None
         out = run_job(t, valence, dose, mix, desc, topic)
         if out:
-            body = compose_reply(t, desc, transcript=out) if VOICE_ON else None
+            body = (compose_reply(t, desc, transcript=out,
+                                  dossier_text=dos) if VOICE_ON else None)
             if not body:
                 # voice layer down; ship the raw steered output like before
                 body = clean_reply(out)
@@ -543,7 +622,8 @@ def poll_once():
             reply = f"{dose_tag(kind, dose)} {body}"
         else:
             log("worker returned nothing for", mid, "- voice-only fallback")
-            body = compose_reply(t, desc, transcript=None) if VOICE_ON else None
+            body = (compose_reply(t, desc, transcript=None,
+                                  dossier_text=dos) if VOICE_ON else None)
             if not body:
                 log("no reply possible for", mid, "- will retry next poll")
                 continue
