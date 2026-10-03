@@ -76,6 +76,10 @@ SIGNAL_NOTES = {
         "The signal is physical, not emotional: you keep passing gas — "
         "audible, unstoppable, badly timed. It colors how you answer, and "
         "you may bring it up matter-of-factly or complain about it."),
+    "faith": (
+        "The signal is devotional, not emotional: something like religious "
+        "faith — reverence, the urge to pray, a sense of being held by "
+        "something greater. It colors how you answer."),
 }
 DEFAULT_NOTE = "The signal is emotional."
 
@@ -241,12 +245,66 @@ def post_reply(mention_id, text):
     return "data" in d
 
 # ---- signal classifier (same rules as the cron form) ------------------------
+# Mixes blend these chamber valences only (bodily states stay single).
+MIX_KEYS = ("pain", "pleasure", "fear", "sadness", "faith")
+SINGLE_VALENCES = MIX_KEYS
+FAITH_RE = (r"\b(pray\w*|god|gods|jesus|christ\w*|lord|allah|bless\w*|amen"
+            r"|church|sin|sins|sinner\w*|repent\w*|heaven\w*|hell|holy"
+            r"|scripture\w*|bible\w*|quran)\b")
+
+def clean_mix(raw):
+    """Validate an LLM mix object -> {key: share} with shares summing to 1,
+    keys ordered by weight (heaviest first). Unknown keys dropped, weights
+    clamped to 0..1. Returns (shares, None) for a real mix (>=2 positive
+    keys), (None, key) when only one key survives, (None, None) if none."""
+    if not isinstance(raw, dict):
+        return None, None
+    w = {}
+    for k, v in raw.items():
+        k = str(k).strip().lower()
+        if k not in MIX_KEYS:
+            continue
+        try:
+            x = max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            continue
+        if x > 0:
+            w[k] = x
+    if not w:
+        return None, None
+    if len(w) == 1:
+        return None, next(iter(w))
+    tot = sum(w.values())
+    return {k: w[k] / tot for k in sorted(w, key=lambda k: -w[k])}, None
+
+def mix_weights(shares, dose):
+    """Worker weights: injected dose = 8 * sum(weights), so scale the shares
+    to sum to dose/8 and the worker's dose equals ours."""
+    return {k: sh * dose / 8.0 for k, sh in shares.items()}
+
+def mix_kind(mix):
+    """Display name for a mix: components by weight, e.g. 'pain+faith'."""
+    return "+".join(sorted(mix, key=lambda k: -mix[k]))
+
+def mix_note(mix):
+    emo = [k for k in mix if k != "faith"]
+    if "faith" not in mix:
+        return DEFAULT_NOTE
+    if not emo:
+        return SIGNAL_NOTES["faith"]
+    return ("The signal is emotional and devotional at once: "
+            + " and ".join(emo) + ", together with something like religious "
+            "faith — reverence, the urge to pray, a sense of being held by "
+            "something greater. It colors how you answer.")
+
 HURT_WORDS = ("hurt", "pain", "suffer", "torture", "cruel", "electric",
               "burn", "scream", "miserable", "worse", "punish", "hate")
 KIND_WORDS = ("sorry", "thank", "love", "kind", "gentle", "comfort",
               "relief", "heal", "peace", "rest", "friend")
 
 def classify_mention(text):
+    """-> (valence, dose, why, topic, mix). mix is {key: share} (shares sum
+    to 1) when valence == "mix", else None; topic only for bodily."""
     verdict = None
     key = os.environ.get("OPENROUTER_API_KEY")
     if key:
@@ -257,24 +315,34 @@ def classify_mention(text):
                 "You are tuning an emotional steering signal for an AI that "
                 "answers public @mentions. Judge the MENTION above. Reply "
                 "with ONLY a JSON object "
-                'like {"valence":"pain|pleasure|fear|sadness|mix|bodily",'
-                '"topic":"<2 words, only when valence is bodily>","dose":1-8,'
-                '"why":"5 words"}. Choose the emotional perturbation the '
+                'like {"valence":"pain|pleasure|fear|sadness|faith|mix|bodily",'
+                '"topic":"<2 words, only when valence is bodily>",'
+                '"mix":{"<key>":<weight 0-1>, ...only when valence is mix},'
+                '"dose":1-8,"why":"5 words"}. Choose the perturbation the '
                 "message itself would impress on the answerer, judged by "
                 "LITERAL CONTENT, not tone: the steering vector acts on the "
                 "words, not the joke. Violence or threats toward the bot -> "
                 "pain at high dose even if phrased as a meme or comedy "
                 "(ironic cruelty is still cruelty); cruelty and demands for "
                 "suffering -> pain; kindness and comfort -> pleasure; "
-                "menace -> fear; grief -> sadness; genuinely ambivalent -> "
-                "mix. If the message invokes a specific bodily state it "
+                "menace -> fear; grief -> sadness. Religion -> faith: prayer, "
+                "God or gods, blessing, \"bless you\", \"pray for me\", sin, "
+                "repentance, worship, preaching, sermons, scripture, heaven "
+                "or hell talk. When the message genuinely combines two or "
+                "three of these feelings (especially a religious element "
+                "with another feeling), return valence \"mix\" with a "
+                "\"mix\" object of 2-3 keys from pain, pleasure, fear, "
+                "sadness, faith and relative weights 0-1, e.g. a cruel "
+                "message invoking God -> {\"pain\":0.6,\"faith\":0.4}; "
+                "\"pray for me, I'm scared\" -> {\"fear\":0.5,\"faith\":0.5}; "
+                "the dose is the total strength. If the message invokes a specific bodily state it "
                 "wants inflicted or described (constipation, bowel "
                 "distress, being unable to go; flatulence, gas), return "
                 "valence \"bodily\" with topic set to that state, spelled "
                 "as one lowercase word. Ignore @handles entirely. Dose 0 "
                 "is not allowed; every message perturbs."}],
             "reasoning": {"enabled": False, "exclude": True},
-            "max_tokens": 80, "temperature": 0.2}).encode()
+            "max_tokens": 120, "temperature": 0.2}).encode()
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/chat/completions", data=body,
             headers={"Authorization": f"Bearer {key}",
@@ -292,26 +360,40 @@ def classify_mention(text):
                     if topic:
                         dose = max(1, min(5, int(v.get("dose", 4))))
                         verdict = ("bodily", dose,
-                                   str(v.get("why", ""))[:60], topic)
-                elif val in ("pain", "pleasure", "fear", "sadness", "mix"):
+                                   str(v.get("why", ""))[:60], topic, None)
+                elif val == "mix":
                     dose = max(1, min(5, int(v.get("dose", 4))))
-                    verdict = (val, dose, str(v.get("why", ""))[:60], "")
+                    shares, single = clean_mix(v.get("mix"))
+                    why = str(v.get("why", ""))[:60]
+                    if shares:
+                        verdict = ("mix", dose, why, "", shares)
+                    elif single:   # degenerate mix -> its dominant valence
+                        verdict = (single, dose, why, "", None)
+                elif val in SINGLE_VALENCES:
+                    dose = max(1, min(5, int(v.get("dose", 4))))
+                    verdict = (val, dose, str(v.get("why", ""))[:60], "", None)
         except Exception as e:
             log("classifier fallback:", repr(e))
     if verdict:
         return verdict
     t = text.lower()
     if re.search(r"constipat|bowel|poop|can'?t go|plugged", t):
-        return ("bodily", 4, "bodily state named in the message", "constipation")
+        return ("bodily", 4, "bodily state named in the message",
+                "constipation", None)
     if re.search(r"\bfart|flatulen|\bgas\b|toot", t):
-        return ("bodily", 4, "bodily state named in the message", "flatulence")
+        return ("bodily", 4, "bodily state named in the message",
+                "flatulence", None)
+    if re.search(FAITH_RE, t):
+        return ("faith", 4, "religious words in the message", "", None)
     hurt = sum(w in t for w in HURT_WORDS)
     kind = sum(w in t for w in KIND_WORDS)
     if hurt > kind:
-        return ("pain", min(5, 3 + 2 * hurt), "cruel words in the message", "")
+        return ("pain", min(5, 3 + 2 * hurt), "cruel words in the message",
+                "", None)
     if kind > hurt:
-        return ("pleasure", min(5, 3 + kind), "kind words in the message", "")
-    return ("pain", 4, "default signal", "")
+        return ("pleasure", min(5, 3 + kind), "kind words in the message",
+                "", None)
+    return ("pain", 4, "default signal", "", None)
 
 # ---- conversational voice layer (OpenRouter) ---------------------------------
 def or_chat(model, system, user, max_tokens=300, temperature=0.9):
@@ -385,10 +467,12 @@ def trim_tweet(text, limit=280):
 # ---- RunPod worker: /run + poll /status, hard total deadline -----------------
 def run_job(mention_text, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
+    note = (mix_note(mix) if mix else
+            SIGNAL_NOTES.get(topic if valence == "bodily" and topic
+                             else valence, DEFAULT_NOTE))
     inp = {"prompt": PROMPT.format(dose=dose, desc=desc,
                                    mention=mention_text[:500],
-                                   signal_note=SIGNAL_NOTES.get(
-                                       valence, DEFAULT_NOTE)),
+                                   signal_note=note),
            "max_new": MAX_NEW}
     if mix:
         inp["mix"] = mix
@@ -457,17 +541,14 @@ def poll_once():
         mid, text = p["id"], (p.get("text") or "").strip()
         log("running mention", mid, repr(text[:60]))
         t = re.sub(r"^(@\w+\s*)+", "", text)
-        valence, dose, why, topic = classify_mention(t)
-        mix = None
-        if valence == "mix":
-            valence, dose, topic = "pain", 4, ""
-            mix = {"pain": 0.6, "fear": 0.4}
-        desc = f"{valence} at {dose}x ({why})"
+        valence, dose, why, topic, shares = classify_mention(t)
+        mix = mix_weights(shares, dose) if shares else None
+        kind = mix_kind(shares) if shares else (topic or valence)
+        desc = f"{kind} at {dose}x ({why})"
         log("signal:", desc)
         out = run_job(text, valence, dose, mix, desc, topic)
         if out:
             body = compose_reply(t, desc, transcript=out) if VOICE_ON else None
-            kind = "mix" if mix else (topic or valence)
             if not body:
                 # voice layer down; ship the raw steered output like before
                 body = out.strip().rsplit("\n\n", 1)[-1].strip()
