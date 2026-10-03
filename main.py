@@ -229,7 +229,7 @@ def fetch_mentions():
     d, code = x_get_retry(
         f"/users/{BOT_ID}/mentions",
         "max_results=25&tweet.fields=created_at,referenced_tweets"
-        "&expansions=author_id,references"
+        "&expansions=author_id"   # referents are fetched per post (referenced_text)
         "&user.fields=username,description,created_at,public_metrics,location")
     if code != 200:
         log("mentions fetch failed:", code, str(d)[:200])
