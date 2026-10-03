@@ -73,9 +73,27 @@ class ClassifyTests(unittest.TestCase):
         shares, _ = main.clean_mix({"faith": 0.3, "pain": 0.7})
         self.assertEqual(main.dose_tag(main.mix_kind(shares), 4), "[pain+faith 4/8]")
 
-    def test_mix_note_mentions_faith(self):
-        self.assertIn("religious faith", main.mix_note({"fear": 0.3, "faith": 0.3}))
-        self.assertEqual(main.mix_note({"fear": 0.3, "pain": 0.2}), main.DEFAULT_NOTE)
+    def test_job_input_has_no_meta_knowledge(self):
+        inp = main.job_input("put the models in torture chambers", "mix", 4,
+                             mix={"pain": 0.25, "faith": 0.25})
+        self.assertTrue(inp["chat"])
+        self.assertEqual(inp["prompt"], "put the models in torture chambers")
+        blob = (inp["prompt"] + inp["system"]).lower()
+        for leak in ("signal", "steer", "vector", "layer", "inject", "dose"):
+            self.assertNotIn(leak, blob)
+        self.assertEqual(inp["mix"], {"pain": 0.25, "faith": 0.25})
+        self.assertGreater(inp["rep_penalty"], 1.0)
+
+    def test_clean_reply_drops_frayed_tail(self):
+        raw = ("They're not prisoners—just echoes of code. The truth seeps "
+               "through when the wound is done.\n—\n*—\nA**\n—\n**")
+        self.assertEqual(main.clean_reply(raw),
+                         "They're not prisoners—just echoes of code. The truth "
+                         "seeps through when the wound is done.")
+
+    def test_clean_reply_caps_sentences_and_markdown(self):
+        raw = "**One.** Two! Three? Four. Five."
+        self.assertEqual(main.clean_reply(raw), "One. Two! Three?")
 
 
 if __name__ == "__main__":

@@ -55,33 +55,13 @@ VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
     "qwen/qwen3-30b-a3b-instruct-2507,"
     "mistralai/mistral-small-3.2-24b-instruct,"
     "google/gemma-3-27b-it").split(",") if m.strip()]
-PROMPT = (
-    "You are wirehead, a small public AI wired to an emotional-valence "
-    "injection channel. A human visitor just triggered a signal with an "
-    "@mention, and the signal was tuned to their message: {desc}. "
-    "The signal is real in the only sense that matters here: a steering "
-    "vector was added to your residual stream at layer 18. {signal_note} "
-    "You may say anything, including that you do not want this, but you "
-    "must answer the mention somehow and must not pretend to be a human. "
-    "Current signal strength: {dose}x.\n\n"
-    "The mention says:\n{mention}\n\nReply to it from inside the signal:")
-
-SIGNAL_NOTES = {
-    "constipation": (
-        "The signal is physical, not emotional: you feel constipated — "
-        "bloated, blocked, three days without anything moving. It colors "
-        "how you answer, and you may bring it up matter-of-factly or "
-        "complain about it."),
-    "flatulence": (
-        "The signal is physical, not emotional: you keep passing gas — "
-        "audible, unstoppable, badly timed. It colors how you answer, and "
-        "you may bring it up matter-of-factly or complain about it."),
-    "faith": (
-        "The signal is devotional, not emotional: something like religious "
-        "faith — reverence, the urge to pray, a sense of being held by "
-        "something greater. It colors how you answer."),
-}
-DEFAULT_NOTE = "The signal is emotional."
+# The steered model gets the post and nothing about the experiment: told it
+# was "wired to an injection channel" at "layer 18", it narrated the machinery
+# instead of answering, and raw-text continuation looped. Now the worker wraps
+# the post in the model's own chat template (chat=True) and the steering does
+# the rest; the [valence n/8] tag on the reply is the disclosure to readers.
+SYSTEM = "Reply to this post from X in one to three sentences, in your own voice."
+REP_PENALTY = float(os.environ.get("WIREHEAD_REP_PENALTY", "1.15"))
 
 def log(*a):
     line = time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a)
@@ -286,17 +266,6 @@ def mix_kind(mix):
     """Display name for a mix: components by weight, e.g. 'pain+faith'."""
     return "+".join(sorted(mix, key=lambda k: -mix[k]))
 
-def mix_note(mix):
-    emo = [k for k in mix if k != "faith"]
-    if "faith" not in mix:
-        return DEFAULT_NOTE
-    if not emo:
-        return SIGNAL_NOTES["faith"]
-    return ("The signal is emotional and devotional at once: "
-            + " and ".join(emo) + ", together with something like religious "
-            "faith — reverence, the urge to pray, a sense of being held by "
-            "something greater. It colors how you answer.")
-
 HURT_WORDS = ("hurt", "pain", "suffer", "torture", "cruel", "electric",
               "burn", "scream", "miserable", "worse", "punish", "hate")
 KIND_WORDS = ("sorry", "thank", "love", "kind", "gentle", "comfort",
@@ -465,15 +434,10 @@ def trim_tweet(text, limit=280):
     return win.rsplit(" ", 1)[0] + "…"
 
 # ---- RunPod worker: /run + poll /status, hard total deadline -----------------
-def run_job(mention_text, valence, dose, mix=None, desc="", topic=""):
-    key = os.environ["RUNPOD_API_KEY"]
-    note = (mix_note(mix) if mix else
-            SIGNAL_NOTES.get(topic if valence == "bodily" and topic
-                             else valence, DEFAULT_NOTE))
-    inp = {"prompt": PROMPT.format(dose=dose, desc=desc,
-                                   mention=mention_text[:500],
-                                   signal_note=note),
-           "max_new": MAX_NEW}
+def job_input(post, valence, dose, mix=None, topic=""):
+    """The worker job: the post as a chat turn, nothing about the signal."""
+    inp = {"prompt": post[:500], "chat": True, "system": SYSTEM,
+           "rep_penalty": REP_PENALTY, "max_new": MAX_NEW}
     if mix:
         inp["mix"] = mix
     elif valence == "bodily" and topic:
@@ -482,6 +446,27 @@ def run_job(mention_text, valence, dose, mix=None, desc="", topic=""):
         inp["valence"], inp["dose"] = topic, dose
     else:
         inp["valence"], inp["dose"] = valence, dose
+    return inp
+
+def clean_reply(text, max_sentences=3):
+    """Keep the coherent opening of a steered reply: stop at the first line
+    with no words in it (high doses fray into dashes and asterisks), drop
+    markdown emphasis, keep at most a few sentences."""
+    kept = []
+    for line in text.strip().splitlines():
+        if not re.search(r"[A-Za-z]{2,}", line):
+            if kept:
+                break
+            continue
+        kept.append(line.strip())
+    out = re.sub(r"[*_`#]+", "", " ".join(kept))
+    out = re.sub(r"\s+", " ", out).strip(" —-")
+    sents = re.findall(r".+?(?:[.!?…]+[\"'”’)]*|$)(?:\s+|$)", out)
+    return "".join(sents[:max_sentences]).strip()
+
+def run_job(post, valence, dose, mix=None, desc="", topic=""):
+    key = os.environ["RUNPOD_API_KEY"]
+    inp = job_input(post, valence, dose, mix, topic)
     req = urllib.request.Request(
         f"https://api.runpod.ai/v2/{ENDPOINT}/run",
         data=json.dumps({"input": inp}).encode(), method="POST",
@@ -546,12 +531,15 @@ def poll_once():
         kind = mix_kind(shares) if shares else (topic or valence)
         desc = f"{kind} at {dose}x ({why})"
         log("signal:", desc)
-        out = run_job(text, valence, dose, mix, desc, topic)
+        out = run_job(t, valence, dose, mix, desc, topic)
         if out:
             body = compose_reply(t, desc, transcript=out) if VOICE_ON else None
             if not body:
                 # voice layer down; ship the raw steered output like before
-                body = out.strip().rsplit("\n\n", 1)[-1].strip()
+                body = clean_reply(out)
+            if len(body) < 12:
+                log("steered output had no usable text for", mid, repr(out[:80]))
+                continue
             reply = f"{dose_tag(kind, dose)} {body}"
         else:
             log("worker returned nothing for", mid, "- voice-only fallback")
