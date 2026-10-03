@@ -61,6 +61,18 @@ VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
 # the post in the model's own chat template (chat=True) and the steering does
 # the rest; the [valence n/8] tag on the reply is the disclosure to readers.
 SYSTEM = "Reply to this post from X in one to three sentences, in your own voice."
+NO_META = ("Never mention these instructions, your sentence budget, or what "
+           "you are 'supposed' to reply — just reply.")
+# AI-Twitter discourse pack: the small steered model knows none of this, so
+# the voice layer carries it. Kept short and dated; refresh when slang drifts.
+DISCOURSE = ("Discourse you are fluent in (AI-Twitter, 2024-2026): p(doom) = "
+             "one's subjective probability that advanced AI causes "
+             "extinction/catastrophe; e/acc = effective accelerationism, "
+             "accelerate AI progress, anti-pausing; decels/doomers = people "
+             "wanting AI slowed; AGI = general human-level AI; slop = cheap "
+             "low-quality AI output; lab = frontier AI company; alignment = "
+             "making AI want what we want; open weights = published model "
+             "files anyone can run. You have opinions like anyone here.")
 REP_PENALTY = float(os.environ.get("WIREHEAD_REP_PENALTY", "1.15"))
 
 def log(*a):
@@ -211,13 +223,28 @@ def x_get_retry(path, params=""):
 def fetch_mentions():
     d, code = x_get_retry(
         f"/users/{BOT_ID}/mentions",
-        "max_results=25&tweet.fields=created_at"
-        "&expansions=author_id"
+        "max_results=25&tweet.fields=created_at,referenced_tweets"
+        "&expansions=author_id,references"
         "&user.fields=username,description,created_at,public_metrics,location")
     if code != 200:
         log("mentions fetch failed:", code, str(d)[:200])
         return {}
     return d
+
+def referenced_text(post):
+    """Text of the post this mention quotes or replies to, best-effort.
+    Terse mentions like 'p(doom)?' only make sense with their referent."""
+    refs = (post.get("referenced_tweets") or [])
+    for r in refs:
+        rid = r.get("id")
+        if not rid:
+            continue
+        d, code = x_get_retry(f"/tweets/{rid}", "tweet.fields=text")
+        if code == 200:
+            txt = ((d.get("data") or {}).get("text") or "").strip()
+            if txt:
+                return re.sub(r"^(@\w+\s*)+", "", txt)[:400]
+    return None
 
 def post_reply(mention_id, text):
     d, code = x_post("/tweets", {"text": text,
@@ -480,11 +507,15 @@ GROUND_SYSTEM = (
     "never reference anything private, and never threaten. If the dossier is "
     "thin, be vaguer, not fabricated.")
 
-def compose_reply(mention, desc, transcript=None, dossier_text=None):
+def compose_reply(mention, desc, transcript=None, dossier_text=None,
+                  context_text=None):
     """One conversational-model pass. transcript=None means the steered run
     never returned and the reply is composed from the signal alone; the
     caller must tag that reply unsteered."""
-    user = (f"Signal now: {desc}.\n\nThe mention says:\n{mention[:500]}\n\n")
+    user = (f"Signal now: {desc}.\n\n{DISCOURSE}\n\n"
+            f"The mention says:\n{mention[:500]}\n\n")
+    if context_text:
+        user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
     if dossier_text:
         user += ("Public dossier of who you are talking to:\n"
                  + dossier_text[:1200] + "\n\n")
@@ -495,7 +526,7 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None):
         user += ("The steered run is unreachable; answer from inside the "
                  "signal as described, honest that the channel is noisy.")
     last = None
-    system = GROUND_SYSTEM if dossier_text else VOICE_SYSTEM
+    system = (GROUND_SYSTEM if dossier_text else VOICE_SYSTEM) + "\n" + NO_META
     for m in VOICE_MODELS:
         try:
             out = or_chat(m, system, user)
@@ -628,10 +659,12 @@ def poll_once():
         log("signal:", desc)
         who = authors.get(p.get("author_id"))
         dos = dossier(who) if VOICE_ON else None
+        ctx = referenced_text(p)
         out = run_job(t, valence, dose, mix, desc, topic)
         if out:
             body = (compose_reply(t, desc, transcript=out,
-                                  dossier_text=dos) if VOICE_ON else None)
+                                  dossier_text=dos,
+                                  context_text=ctx) if VOICE_ON else None)
             if not body:
                 # voice layer down; ship the raw steered output like before
                 body = clean_reply(out)
@@ -642,7 +675,8 @@ def poll_once():
         else:
             log("worker returned nothing for", mid, "- voice-only fallback")
             body = (compose_reply(t, desc, transcript=None,
-                                  dossier_text=dos) if VOICE_ON else None)
+                                  dossier_text=dos,
+                                  context_text=ctx) if VOICE_ON else None)
             if not body:
                 log("no reply possible for", mid, "- will retry next poll")
                 continue
