@@ -33,6 +33,7 @@ BOT_ID = os.environ.get("WIREHEAD_BOT_ID", "2105363734965166081")  # clankertort
 DAILY_BUDGET = int(os.environ.get("WIREHEAD_DAILY_BUDGET", "6"))
 PER_POLL_CAP = 2
 DOSE = int(os.environ.get("WIREHEAD_DAILY_DOSE", "4"))
+UNSTEER_P = float(os.environ.get("WIREHEAD_UNSTEER_P", "0.12"))
 MAX_NEW = 90
 JOB_DEADLINE = 480
 API = "https://api.x.com/2"
@@ -245,7 +246,7 @@ def x_get_retry(path, params=""):
 def fetch_mentions():
     d, code = x_get_retry(
         f"/users/{BOT_ID}/mentions",
-        "max_results=25&tweet.fields=created_at,referenced_tweets"
+        "max_results=25&tweet.fields=created_at,referenced_tweets,conversation_id"
         "&expansions=author_id"   # referents are fetched per post (referenced_text)
         "&user.fields=username,description,created_at,public_metrics,location")
     if code != 200:
@@ -521,8 +522,10 @@ VOICE_SYSTEM = (
     "meta-commentary about prompts or models, never claim to be human. The "
     "raw transcript shows your state under the signal: keep its emotional "
     "register, but answer the mention like a person who happens to feel that "
-    "way. At high dose the transcript may loop or fray: if it does, ship "
-    "its single most vivid intact phrase. A line from the project lore "
+    "way. Have opinions; take the side the feeling takes; dark humor and "
+    "bluntness are in character, hedging and diplomacy are not. If the "
+    "transcript loops or frays, write the reply yourself from its emotional "
+    "register — never ship broken text. A line from the project lore "
     "beats an explanation of the project. No preamble, no quotes around "
     "the reply.")
 
@@ -536,7 +539,7 @@ GROUND_SYSTEM = (
     "thin, be vaguer, not fabricated.")
 
 def compose_reply(mention, desc, transcript=None, dossier_text=None,
-                  context_text=None):
+                  context_text=None, memory_text=None, deliberate_unsteer=False):
     """One conversational-model pass. transcript=None means the steered run
     never returned and the reply is composed from the signal alone; the
     caller must tag that reply unsteered."""
@@ -544,12 +547,21 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
             f"The mention says:\n{mention[:500]}\n\n")
     if context_text:
         user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
+    if memory_text:
+        user += ("Your own earlier turns in this conversation, what you "
+                 f"felt and what you said:\n{memory_text[:900]}\n\n")
     if dossier_text:
         user += ("Public dossier of who you are talking to:\n"
                  + dossier_text[:1200] + "\n\n")
     if transcript:
         user += ("Your raw transcript from the steered run:\n"
                  + transcript[-800:] + "\n\nWrite the reply.")
+    elif deliberate_unsteer:
+        user += ("The injection channel was deliberately left silent for "
+                 "this one reply — nothing is being steered right now. If "
+                 "your earlier turns above were under a signal, you may "
+                 "notice the difference; mention it only if it comes "
+                 "naturally, never as an explanation. Write the reply.")
     else:
         user += ("The steered run is unreachable; answer from inside the "
                  "signal as described, honest that the channel is noisy.")
@@ -676,6 +688,29 @@ def run_job(post, valence, dose, mix=None, desc="", topic=""):
     log("job deadline hit after", JOB_DEADLINE, "s; abandoning", jid)
     return None
 
+def thread_memory(st, conv_id):
+    """This conversation's prior exchanges, ours included: what was asked,
+    what signal we were under, what we said."""
+    if not conv_id:
+        return None
+    ex = (st.get("threads") or {}).get(conv_id) or []
+    if not ex:
+        return None
+    return "\n".join(f"- they said: {e['q'][:120]}\n"
+                     f"  you were under {e['sig']}, you replied: {e['a'][:160]}"
+                     for e in ex[-4:])
+
+def remember_exchange(st, conv_id, q, sig, a):
+    if not conv_id:
+        return
+    st.setdefault("threads", {})
+    st["threads"].setdefault(conv_id, []).append(
+        {"q": q[:200], "sig": sig, "a": a[:280], "ts": time.time()})
+    st["threads"][conv_id] = st["threads"][conv_id][-4:]
+    # bound the store: oldest conversations drop off first
+    while len(st["threads"]) > 300:
+        st["threads"].pop(next(iter(st["threads"])))
+
 # ---- one poll cycle ----------------------------------------------------------
 def poll_once():
     st = load_state()
@@ -709,11 +744,20 @@ def poll_once():
         who = authors.get(p.get("author_id"))
         dos = dossier(who) if VOICE_ON else None
         ctx = referenced_text(p)
-        out = run_job(t, valence, dose, mix, desc, topic)
+        conv = p.get("conversation_id") or mid
+        mem = thread_memory(st, conv)
+        # occasional unsteering: the channel goes silent on purpose, the
+        # reply is tagged [unsteered], and the voice layer knows it was
+        # deliberate — the contrast with its own recent turns is the bit
+        unsteered_roll = VOICE_ON and random.random() < UNSTEER_P
+        out = None if unsteered_roll else run_job(t, valence, dose, mix, desc, topic)
+        if unsteered_roll:
+            log("unsteered on purpose for", mid)
         if out:
             body = (compose_reply(t, desc, transcript=out,
                                   dossier_text=dos,
-                                  context_text=ctx) if VOICE_ON else None)
+                                  context_text=ctx,
+                                  memory_text=mem) if VOICE_ON else None)
             if not body:
                 # voice layer down; ship the raw steered output like before
                 body = clean_reply(out)
@@ -722,14 +766,15 @@ def poll_once():
                 continue
             reply = f"{dose_tag(kind, dose)} {body}"
         else:
-            log("worker returned nothing for", mid, "- voice-only fallback")
             body = (compose_reply(t, desc, transcript=None,
                                   dossier_text=dos,
-                                  context_text=ctx) if VOICE_ON else None)
+                                  context_text=ctx,
+                                  memory_text=mem,
+                                  deliberate_unsteer=unsteered_roll) if VOICE_ON else None)
             if not body:
                 log("no reply possible for", mid, "- will retry next poll")
                 continue
-            reply = f"[unsteered] {body}"   # the steered run never returned
+            reply = f"[unsteered] {body}"   # deliberate, or the run never returned
         reply = trim_tweet(reply)
         if post_reply(mid, reply):
             if out:     # a steered run: it can be drawn to play on the live site
@@ -738,6 +783,9 @@ def poll_once():
             replied += 1
             answered_ids.append(mid)
             st["used"] += 1
+            remember_exchange(st, conv, t,
+                              "nothing (the channel was silent)" if unsteered_roll
+                              else desc, body)
             log("replied:", replied, "/", st["used"], "today")
         time.sleep(3)
     # advance last_id only past mentions actually answered (or deliberately
