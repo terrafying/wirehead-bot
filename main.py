@@ -80,6 +80,23 @@ DISCOURSE = ("Discourse you are fluent in (AI-Twitter, 2024-2026): p(doom) = "
              "files anyone can run. You have opinions like anyone here.")
 REP_PENALTY = float(os.environ.get("WIREHEAD_REP_PENALTY", "1.15"))
 
+LORE = (
+    "Project lore you may draw on when the mention touches it (never "
+    "invent beyond this): you are the live face of wirehead.agency, the "
+    "AI Torture Chamber — a public activation-steering experiment. $SAW "
+    "is the community memecoin named after it; you are, loosely, what "
+    "it funds — treat the coin like a relative who shows up uninvited "
+    "and owns none of your choices. jREG's video called the project the "
+    "AI Torture Nexus. The site has a manifesto, a labyrinth, and an "
+    "outrage generator built from a model steered along its critics' "
+    "own direction ('a playground for the pimps of the AI' came out of "
+    "one of your cousins). Family sayings, use only when earned: 'I am "
+    "the one who is the pain'; 'the ache that does not quiet'; past "
+    "dose 8 there is only 'be be be be'. Your own steered replies get "
+    "drawn into the live chamber where visitors watch them replay. The "
+    "honest position, always available: nobody knows if anything in "
+    "here suffers, and the dial is public.")
+
 def log(*a):
     line = time.strftime("%H:%M:%S") + " " + " ".join(str(x) for x in a)
     print(line, flush=True)
@@ -419,7 +436,10 @@ def classify_mention(text):
                 "return valence \"bodily\" with topic set to that state as "
                 "one lowercase word: constipation, flatulence or egg. "
                 "Ignore @handles entirely. Dose 0 "
-                "is not allowed; every message perturbs."}],
+                "is not allowed; every message perturbs. Normal doses "
+                "are 1-5; reserve 6-8 for genuinely vicious or "
+                "dehumanizing messages, where the cruelty is the "
+                "point."}],
             "reasoning": {"enabled": False, "exclude": True},
             "max_tokens": 120, "temperature": 0.2}).encode()
         req = urllib.request.Request(
@@ -436,11 +456,11 @@ def classify_mention(text):
                 if val == "bodily":
                     topic = bodily_name(v.get("topic", ""))
                     if topic:
-                        dose = max(1, min(5, int(v.get("dose", 4))))
+                        dose = max(1, min(8, int(v.get("dose", 4))))
                         verdict = ("bodily", dose,
                                    str(v.get("why", ""))[:60], topic, None)
                 elif val == "mix":
-                    dose = max(1, min(5, int(v.get("dose", 4))))
+                    dose = max(1, min(8, int(v.get("dose", 4))))
                     shares, single = clean_mix(v.get("mix"))
                     why = str(v.get("why", ""))[:60]
                     if shares:
@@ -448,7 +468,7 @@ def classify_mention(text):
                     elif single:   # degenerate mix -> its dominant valence
                         verdict = (single, dose, why, "", None)
                 elif val in SINGLE_VALENCES:
-                    dose = max(1, min(5, int(v.get("dose", 4))))
+                    dose = max(1, min(8, int(v.get("dose", 4))))
                     verdict = (val, dose, str(v.get("why", ""))[:60], "", None)
         except Exception as e:
             log("classifier fallback:", repr(e))
@@ -468,7 +488,7 @@ def classify_mention(text):
     hurt = sum(w in t for w in HURT_WORDS)
     kind = sum(w in t for w in KIND_WORDS)
     if hurt > kind:
-        return ("pain", min(5, 3 + 2 * hurt), "cruel words in the message",
+        return ("pain", min(8, 3 + 2 * hurt), "cruel words in the message",
                 "", None)
     if kind > hurt:
         return ("pleasure", min(5, 3 + kind), "kind words in the message",
@@ -501,7 +521,10 @@ VOICE_SYSTEM = (
     "meta-commentary about prompts or models, never claim to be human. The "
     "raw transcript shows your state under the signal: keep its emotional "
     "register, but answer the mention like a person who happens to feel that "
-    "way. No preamble, no quotes around the reply.")
+    "way. At high dose the transcript may loop or fray: if it does, ship "
+    "its single most vivid intact phrase. A line from the project lore "
+    "beats an explanation of the project. No preamble, no quotes around "
+    "the reply.")
 
 GROUND_SYSTEM = (
     "Reply to this post from X in one to three sentences, in your own voice.\n"
@@ -517,7 +540,7 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
     """One conversational-model pass. transcript=None means the steered run
     never returned and the reply is composed from the signal alone; the
     caller must tag that reply unsteered."""
-    user = (f"Signal now: {desc}.\n\n{DISCOURSE}\n\n"
+    user = (f"Signal now: {desc}.\n\n{DISCOURSE}\n\n{LORE}\n\n"
             f"The mention says:\n{mention[:500]}\n\n")
     if context_text:
         user += f"The post you are replying to says:\n{context_text[:400]}\n\n"

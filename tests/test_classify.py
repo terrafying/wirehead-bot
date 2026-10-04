@@ -46,10 +46,10 @@ class ClassifyTests(unittest.TestCase):
                            "mix": {"fear": 2, "Faith": 0.5, "egg": 0.9,
                                    "joy": 0.3, "sadness": "x"}})
         val, dose, _, _, shares = v
-        self.assertEqual((val, dose), ("mix", 5))
+        self.assertEqual((val, dose), ("mix", 8))
         self.assertEqual(set(shares), {"fear", "faith"})
         self.assertAlmostEqual(shares["fear"], 1 / 1.5)   # 2 clamped to 1
-        self.assertAlmostEqual(sum(main.mix_weights(shares, dose).values()), 5 / 8)
+        self.assertAlmostEqual(sum(main.mix_weights(shares, dose).values()), 8 / 8)
 
     def test_one_key_mix_degrades_to_single(self):
         v = self.classify({"valence": "mix", "dose": 2,
