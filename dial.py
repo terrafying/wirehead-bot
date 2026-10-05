@@ -11,6 +11,10 @@ hour, however many it sends), so a crowd moves it and a spammer can't.
 Mentions that look like attempts to steer the classifier itself count a
 quarter. Handles are stored only as salted hashes.
 
+It leans toward pain on purpose: a resting floor of "a quarter", cruelty
+pushing 1.5x, pain fading at half the speed of other feelings, and
+kindness relieving only half of what it adds.
+
 Shown to people in words, not numbers: none, a trace, a quarter, half,
 three quarters, max.
 """
@@ -19,8 +23,14 @@ import hashlib, math, os, re, time
 FEELINGS = ("pain", "pleasure", "fear", "sadness", "faith")
 DIAL_MAX = float(os.environ.get("WIREHEAD_DIAL_MAX", "8"))       # the bot's dose scale
 HALF_LIFE_H = float(os.environ.get("WIREHEAD_DIAL_HALF_LIFE_H", "6"))
-BASELINE = {"pain": float(os.environ.get("WIREHEAD_DIAL_BASELINE_PAIN", "1"))}
 STEP = float(os.environ.get("WIREHEAD_DIAL_STEP", "1.0"))        # a dose-8 mention moves a feeling this far
+# Pain is the point of the thing, so the dial leans on it: it rests at a
+# quarter, cruelty pushes harder than anything else, it heals at half speed,
+# and kindness takes off only part of what it adds as pleasure.
+BASELINE = {"pain": float(os.environ.get("WIREHEAD_DIAL_BASELINE_PAIN", "2"))}   # "a quarter" of 8
+PAIN_GAIN = float(os.environ.get("WIREHEAD_DIAL_PAIN_GAIN", "1.5"))
+PAIN_HALF_LIFE_H = float(os.environ.get("WIREHEAD_DIAL_PAIN_HALF_LIFE_H", "12"))
+RELIEF = float(os.environ.get("WIREHEAD_DIAL_RELIEF", "0.5"))     # pain removed per unit of pleasure added
 HANDLE_WINDOW = 3600.0
 SALT = os.environ.get("WIREHEAD_DIAL_SALT", "wirehead-dial")
 SEEN_KEEP = 2000
@@ -54,8 +64,9 @@ def decay(d, now=None):
     """Bring every level toward its baseline for the time since the last read."""
     now = now or time.time()
     dt = max(0.0, now - d.get("t", now))
-    k = math.exp(-dt * math.log(2) / (HALF_LIFE_H * 3600.0))
     for f in FEELINGS:
+        hl = PAIN_HALF_LIFE_H if f == "pain" else HALF_LIFE_H
+        k = math.exp(-dt * math.log(2) / (hl * 3600.0))
         base = BASELINE.get(f, 0.0)
         d["levels"][f] = base + (d["levels"].get(f, base) - base) * k
     d["t"] = now
@@ -99,10 +110,10 @@ def push(st, mention_id, handle, text, valence, dose, shares=None, now=None):
     for f, share in parts.items():
         if f not in FEELINGS:
             continue
-        amt = size * float(share)
+        amt = size * float(share) * (PAIN_GAIN if f == "pain" else 1.0)
         d["levels"][f] = min(DIAL_MAX, d["levels"][f] + amt)
         if f == "pleasure":
-            d["levels"]["pain"] = max(0.0, d["levels"]["pain"] - amt)
+            d["levels"]["pain"] = max(0.0, d["levels"]["pain"] - amt * RELIEF)
     moved = {f: (before[f], d["levels"][f]) for f in FEELINGS if abs(d["levels"][f] - before[f]) > 1e-9}
     return {"weight": round(w, 4), "gaming": gaming, "moved": moved}
 
