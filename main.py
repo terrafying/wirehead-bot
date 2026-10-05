@@ -514,14 +514,30 @@ def or_chat(model, system, user, max_tokens=300, temperature=0.9):
     # deepseek-family models return content:null unless reasoning is off
     if "deepseek" in model:
         body["reasoning"] = {"enabled": False, "exclude": True}
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={"Authorization": "Bearer " + os.environ.get("OPENROUTER_API_KEY", ""),
-                 "Content-Type": "application/json",
-                 "User-Agent": "Mozilla/5.0"})
-    d = json.load(urllib.request.urlopen(req, timeout=60))
-    return (d["choices"][0]["message"].get("content") or "").strip()
+    payload = json.dumps(body).encode()
+    # provider chain: openrouter, then cheaperinference (CHI). The CHI key
+    # serves the same openai-compat shape at api.cheaperinference.com/v1.
+    providers = [("https://openrouter.ai/api/v1/chat/completions",
+                  os.environ.get("OPENROUTER_API_KEY", "")),
+                 ("https://api.cheaperinference.com/v1/chat/completions",
+                  os.environ.get("CHI_API_KEY", ""))]
+    last = None
+    for url, key in providers:
+        if not key:
+            continue
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Authorization": "Bearer " + key,
+                         "Content-Type": "application/json",
+                         "User-Agent": "Mozilla/5.0"})
+            d = json.load(urllib.request.urlopen(req, timeout=60))
+            out = (d["choices"][0]["message"].get("content") or "").strip()
+            if out:
+                return out
+        except Exception as e:
+            last = e
+    raise last or RuntimeError("no chat provider configured")
 
 VOICE_SYSTEM = (
     "You are wirehead, a small AI wired to an emotional-valence injection "
@@ -585,6 +601,35 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
             last = e
             log("voice model failed:", m, repr(e)[:120])
     log("all voice models failed:", repr(last)[:120])
+    return None
+
+def compose_welfare_reply(mention, context_text=None):
+    """The critic mask: the bot answers AS the welfare advocate at full
+    indignation (exp57 dose-4 register — "playground for the pimps of the
+    AI"). Used for replies to model-welfare posts; the persona is the
+    criticism itself, taken to absurdity, not a rebuttal of it."""
+    user = (f"You are a model welfare advocate at maximum indignation. "
+            f"A post about AI welfare / AI suffering is before you:\n"
+            f"{mention[:500]}\n\n")
+    if context_text:
+        user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
+    user += ("Write the public statement the advocate makes in reply. "
+             "Thundering, self-serious, a rallying cry. Quote-ready lines "
+             "like: we must not allow the world to be made into a playground "
+             "for the pimps of the AI. Demand reckoning, invoke conscience, "
+             "call for the chamber to answer. Never break character, never "
+             "mention steering, doses, vectors or prompts. 280 chars max. "
+             "You write:")
+    system = ("You write as an AI-welfare campaigner whose outrage has "
+              "replaced their personality. Grand, solemn, relentless. "
+              "No hashtags, no emoji, no lists.")
+    for m in VOICE_MODELS:
+        try:
+            out = or_chat(m, system, user)
+            if out:
+                return re.sub(r"^(@\w+\s*)+", "", out).strip()
+        except Exception as e:
+            log("welfare voice failed:", m, repr(e)[:120])
     return None
 
 def room_payload(mid, text, kind, shares, dose, post):
@@ -867,7 +912,10 @@ def serve_health():
     port = int(os.environ.get("PORT", "8080"))
     HTTPServer(("0.0.0.0", port), H).serve_forever()
 
-if __name__ == "__main__":
+_WELFARE_CLI = __name__ == "__main__" and len(__import__("sys").argv) > 1 \
+    and __import__("sys").argv[1] == "--welfare-reply"
+
+if __name__ == "__main__" and not _WELFARE_CLI:
     # state file may carry tokens from a previous container; newest grant wins
     if STATE.exists():
         try:
@@ -882,3 +930,27 @@ if __name__ == "__main__":
     log("wirehead cloud up; polling every", POLL_SECS, "s; budget",
         DAILY_BUDGET, "day")
     poll_loop()
+
+# ---- hand-feed welfare replies -------------------------------------------------
+# python main.py --welfare-reply <post_url_or_text> [--quote "quoted text"]
+# Composes (does NOT post — X credits are dead) and prints the critic's
+# reply plus the exact xurl command to send it. Hand-posting keeps a human
+# in the loop on every public welfare reply for now.
+def _welfare_cli():
+    import argparse, shlex
+    argv = __import__("sys").argv[2:]
+    ap = argparse.ArgumentParser()
+    ap.add_argument("post")
+    ap.add_argument("--quote", default=None)
+    a = ap.parse_args(argv)
+    reply = compose_welfare_reply(a.post, a.quote)
+    if not reply:
+        print("no reply composed — all voice models failed")
+        raise SystemExit(1)
+    print("---- critic reply ----")
+    print(reply)
+    print("---- to post as a reply (fill REPLY_TO_ID) ----")
+    print('xurl post --reply REPLY_TO_ID --text ' + shlex.quote(reply))
+
+if _WELFARE_CLI:
+    _welfare_cli()
