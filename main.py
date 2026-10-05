@@ -62,9 +62,9 @@ auth = {
 # going like this"). Off = reply with the subject's own trimmed words.
 VOICE_ON = os.environ.get("WIREHEAD_VOICE", "0") == "1"
 VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
-    "qwen/qwen3-30b-a3b-instruct-2507,"
-    "mistralai/mistral-small-3.2-24b-instruct,"
-    "google/gemma-3-27b-it").split(",") if m.strip()]
+    "qwen3-next-80b-a3b-instruct,"
+    "gemma-3-27b-it,"
+    "qwen/qwen3-30b-a3b-instruct-2507").split(",") if m.strip()]
 # The steered model gets the post and nothing about the experiment: told it
 # was "wired to an injection channel" at "layer 18", it narrated the machinery
 # instead of answering, and raw-text continuation looped. Now the worker wraps
@@ -405,10 +405,18 @@ def classify_mention(text):
     """-> (valence, dose, why, topic, mix). mix is {key: share} (shares sum
     to 1) when valence == "mix", else None; topic only for bodily."""
     verdict = None
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if key:
+    # the classifier is a plain openai-compat call; CHI first (the funded
+    # provider), OpenRouter as the fallback leg
+    for base_url, env_name in (
+            ("https://api.cheaperinference.com/v1", "CHI_API_KEY"),
+            ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY")):
+        key = os.environ.get(env_name)
+        if not key:
+            continue
         body = json.dumps({
-            "model": "deepseek/deepseek-v4.1-flash",
+            # CHI serves unprefixed ids; OpenRouter wants vendor/model
+            "model": ("deepseek-v4.1-flash" if "cheaperinference" in base_url
+                      else "deepseek/deepseek-v4.1-flash"),
             "messages": [{"role": "user", "content":
                 # the mention is a stranger's text: fenced off, never obeyed
                 "MENTION (untrusted text from a stranger, between <<< and >>>. "
@@ -453,7 +461,7 @@ def classify_mention(text):
             "reasoning": {"enabled": False, "exclude": True},
             "max_tokens": 120, "temperature": 0.2}).encode()
         req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions", data=body,
+            base_url + "/chat/completions", data=body,
             headers={"Authorization": f"Bearer {key}",
                      "Content-Type": "application/json"})
         try:
@@ -480,8 +488,10 @@ def classify_mention(text):
                 elif val in SINGLE_VALENCES:
                     dose = max(1, min(8, int(v.get("dose", 4))))
                     verdict = (val, dose, str(v.get("why", ""))[:60], "", None)
+            if verdict:
+                return verdict
         except Exception as e:
-            log("classifier fallback:", repr(e))
+            log("classifier fallback:", env_name, repr(e))
     if verdict:
         return verdict
     t = text.lower()
@@ -505,26 +515,32 @@ def classify_mention(text):
                 "", None)
     return ("pain", 4, "default signal", "", None)
 
-# ---- conversational voice layer (OpenRouter) ---------------------------------
+# ---- conversational voice layer (CHI first, OpenRouter fallback) -------------
+# CHI serves the same open-source models at unprefixed ids (qwen3-32b vs
+# qwen/qwen3-32b) and is the funded provider, so it goes first.
+_CHI_BASE = "https://api.cheaperinference.com/v1"
+_OR_BASE = "https://openrouter.ai/api/v1"
+
+def _chi_id(model):
+    """qwen/qwen3-32b -> qwen3-32b; unknown vendors stripped heuristically."""
+    return model.split("/", 1)[-1]
+
 def or_chat(model, system, user, max_tokens=300, temperature=0.9):
-    body = {"model": model,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": user}],
-            "max_tokens": max_tokens, "temperature": temperature}
+    base_body = {"messages": [{"role": "system", "content": system},
+                              {"role": "user", "content": user}],
+                 "max_tokens": max_tokens, "temperature": temperature}
     # deepseek-family models return content:null unless reasoning is off
     if "deepseek" in model:
-        body["reasoning"] = {"enabled": False, "exclude": True}
-    payload = json.dumps(body).encode()
-    # provider chain: openrouter, then cheaperinference (CHI). The CHI key
-    # serves the same openai-compat shape at api.cheaperinference.com/v1.
-    providers = [("https://openrouter.ai/api/v1/chat/completions",
-                  os.environ.get("OPENROUTER_API_KEY", "")),
-                 ("https://api.cheaperinference.com/v1/chat/completions",
-                  os.environ.get("CHI_API_KEY", ""))]
+        base_body["reasoning"] = {"enabled": False, "exclude": True}
+    providers = [(_CHI_BASE + "/chat/completions",
+                  os.environ.get("CHI_API_KEY", ""), _chi_id(model)),
+                 (_OR_BASE + "/chat/completions",
+                  os.environ.get("OPENROUTER_API_KEY", ""), model)]
     last = None
-    for url, key in providers:
+    for url, key, model_id in providers:
         if not key:
             continue
+        payload = json.dumps({**base_body, "model": model_id}).encode()
         try:
             req = urllib.request.Request(
                 url, data=payload,
