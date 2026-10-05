@@ -8,7 +8,7 @@ name: deploy-bot
 on:
   push:
     branches: [master]
-    paths: ["main.py", "Dockerfile"]
+    paths: ["main.py", "dial.py", "Dockerfile"]
   workflow_dispatch:
 
 concurrency:
