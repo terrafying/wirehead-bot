@@ -860,7 +860,11 @@ def poll_once():
                                   memory_text=mem,
                                   deliberate_unsteer=unsteered_roll) if VOICE_ON else None)
             if not body:
-                log("no reply possible for", mid, "- will retry next poll")
+                # answer just once: never retry a mention whose compose failed
+                # (retries looped forever on threads the bot had no context on)
+                log("no reply possible for", mid, "- skipping (no retry)")
+                st["last_id"] = max(st.get("last_id", "0"), mid)
+                save_state(st)
                 continue
             reply = f"[unsteered] {body}"   # deliberate, or the run never returned
         reply = trim_tweet(reply)
