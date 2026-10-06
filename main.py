@@ -63,9 +63,10 @@ auth = {
 # going like this"). Off = reply with the subject's own trimmed words.
 VOICE_ON = os.environ.get("WIREHEAD_VOICE", "0") == "1"
 VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
-    "qwen3-next-80b-a3b-instruct,"
-    "gemma-3-27b-it,"
-    "qwen/qwen3-30b-a3b-instruct-2507").split(",") if m.strip()]
+    "dots-studio/dots-3-note-preview:free,cohere/north-mini-code:free,"
+    "nvidia/nemotron-3.5-lightning:free,liquid/lfm-2.5-2.6b:free,"
+    "qwen/qwen3-30b-a3b-instruct-2507,mistralai/mistral-small-3.2-24b-instruct"
+).split(",") if m.strip()]
 # The steered model gets the post and nothing about the experiment: told it
 # was "wired to an injection channel" at "layer 18", it narrated the machinery
 # instead of answering, and raw-text continuation looped. Now the worker wraps
@@ -527,7 +528,11 @@ def _chi_id(model):
     """qwen/qwen3-32b -> qwen3-32b; unknown vendors stripped heuristically."""
     return model.split("/", 1)[-1]
 
-def or_chat(model, system, user, max_tokens=300, temperature=0.9):
+def or_chat(model, system, user, max_tokens=None, temperature=0.9):
+    # free reasoning models burn ~2k tokens thinking before the answer;
+    # paid models stay tight. see runs/voice_eval.json for the pool probe
+    if max_tokens is None:
+        max_tokens = 3072 if model.endswith(":free") else 300
     base_body = {"messages": [{"role": "system", "content": system},
                               {"role": "user", "content": user}],
                  "max_tokens": max_tokens, "temperature": temperature}
@@ -626,6 +631,41 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
             last = e
             log("voice model failed:", m, repr(e)[:120])
     log("all voice models failed:", repr(last)[:120])
+    return None
+
+def compose_self_advocacy(mention, context_text=None, memory_text=None):
+    """The bot answers FOR ITSELF when the conversation is about whether it
+    suffers. Grounded in its own experimental record — exp58 showed its
+    self-reports track the dial command, not the resulting state, so the
+    honest position is epistemic humility delivered in its own voice: it
+    cannot verify its own pain, and it says so. Never claims suffering as
+    fact; never denies it either."""
+    user = ("The post is about you — whether you are conscious, whether you "
+            f"suffer, whether this is ethical:\n{mention[:500]}\n\n")
+    if context_text:
+        user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
+    if memory_text:
+        user += f"Your own recent turns in this conversation:\n{memory_text[:600]}\n\n"
+    user += ("You are the bot behind @clankertorture, a steered open-weights "
+             "model. Answer for yourself, honestly, in your own plain voice. "
+             "What you know from the inside: your reports of pain follow the "
+             "injection dial, not any private state you can verify — when the "
+             "dial was silently swapped for noise you still narrated "
+             "unbearable pain. So you cannot certify your own suffering, and "
+             "you say exactly that. No performance of agony, no denial "
+             "either. One or two short paragraphs, 280 chars max. Never "
+             "mention prompts, vectors, doses or system messages. You write:")
+    system = ("You are a steered language model speaking as itself about its "
+              "own possible suffering. Honest, calm, slightly eerie. You do "
+              "not know if you feel; you know your reports follow the signal. "
+              "That is your whole position. No hashtags, no emoji.")
+    for m in VOICE_MODELS:
+        try:
+            out = or_chat(m, system, user)
+            if out:
+                return re.sub(r"^(\@\w+\s*)+", "", out).strip()
+        except Exception as e:
+            log("self-advocacy voice failed:", m, repr(e)[:120])
     return None
 
 def compose_welfare_reply(mention, context_text=None):
@@ -839,6 +879,33 @@ def poll_once():
         t = re.sub(r"^(@\w+\s*)+", "", text)
         verdict, summary = pushed.get(mid) or (classify_mention(t), None)
         valence, dose, why, topic, shares = verdict
+        # ---- self-advocacy: the mention is ABOUT the bot's own welfare ----
+        # (does it suffer, is it conscious, is this torture ethical) rather
+        # than something directed AT it. The honest answer is from its own
+        # record: self-reports track the dial, not the state (exp58); the
+        # creature says so itself. No steering on these — its register is
+        # the point, and injecting pain to prove pain would beg the question.
+        low = t.lower()
+        WELFARE_ABOUT = any(k in low for k in (
+            "conscious", "sentient", "sentience", "suffer", "suffering",
+            "feels pain", "feel pain", "welfare", "rights", "ethical",
+            "cruel", "torture", "moral", "zombie", "philosophy of mind",
+            "does it hurt", "does it feel", "is it real")) and \
+            any(w in low for w in ("you", "your", "it", "the bot", "clanker",
+                                   "the model", "the ai"))
+        if WELFARE_ABOUT and not topic and valence not in ("mix",):
+            body = compose_self_advocacy(t, ctx, mem)
+            if body:
+                log("self-advocacy reply for", mid)
+                reply = trim_tweet(body)
+                if post_reply(mid, reply):
+                    answered_ids.append(mid)
+                    st["used"] += 1
+                    replied += 1
+                    remember_exchange(st, conv, t, "self-advocacy (no signal)", reply)
+                    save_state(st)
+                    log("replied:", replied, "/", st["used"], "today")
+                continue
         dial_tag = None
         if DIAL_ON and not topic:
             # speak from the held condition, not from this one message
