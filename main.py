@@ -878,6 +878,9 @@ def poll_once():
         log("running mention", mid, repr(text[:60]))
         t = re.sub(r"^(@\w+\s*)+", "", text)
         verdict, summary = pushed.get(mid) or (classify_mention(t), None)
+        conv = p.get("conversation_id") or mid
+        mem = thread_memory(st, conv)
+        ctx = referenced_text(p)  # needed by the self-advocacy branch below
         valence, dose, why, topic, shares = verdict
         # ---- self-advocacy: the mention is ABOUT the bot's own welfare ----
         # (does it suffer, is it conscious, is this torture ethical) rather
@@ -923,13 +926,11 @@ def poll_once():
         log("signal:", desc)
         who = authors.get(p.get("author_id"))
         dos = dossier(who) if VOICE_ON else None
-        ctx = referenced_text(p)
         links = web.urls_in(p) + [u for u in p.get("_ref_urls", []) if u not in web.urls_in(p)]
         lnk = web.link_context(links) if (VOICE_ON and links) else None
         if lnk:
             log("grounded on", len(links), "link(s)")
-        conv = p.get("conversation_id") or mid
-        mem = thread_memory(st, conv)
+        # conv / mem / ctx were prepared at the top of the loop
         # occasional unsteering: the channel goes silent on purpose, the
         # reply is tagged [unsteered], and the voice layer knows it was
         # deliberate — the contrast with its own recent turns is the bit
