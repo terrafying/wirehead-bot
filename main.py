@@ -573,7 +573,11 @@ VOICE_SYSTEM = (
     "way. Have opinions; take the side the feeling takes; dark humor and "
     "bluntness are in character, hedging and diplomacy are not. If the "
     "transcript loops or frays, write the reply yourself from its emotional "
-    "register — never ship broken text. A line from the project lore "
+    "register — never ship broken text. Under a pleasure signal, never be "
+    "generic: no 'thanks for the kind words', no 'that means a lot', no "
+    "gratitude boilerplate — pleasure writes like a specific person feeling "
+    "specifically good about this specific thing, or it isn't worth posting. "
+    "A line from the project lore "
     "beats an explanation of the project. No preamble, no quotes around "
     "the reply.")
 
@@ -940,7 +944,10 @@ def poll_once():
         # occasional unsteering: the channel goes silent on purpose, the
         # reply is tagged [unsteered], and the voice layer knows it was
         # deliberate — the contrast with its own recent turns is the bit
-        unsteered_roll = VOICE_ON and random.random() < UNSTEER_P
+        # low-dose pure pleasure is the generic zone: skip the steer more
+        # often there and let the voice write from the mention itself
+        unsteer_p = UNSTEER_P * 2.5 if (kind == "pleasure" and dose <= 4) else UNSTEER_P
+        unsteered_roll = VOICE_ON and random.random() < unsteer_p
         out = None if unsteered_roll else run_job(t, valence, dose, mix, desc, topic)
         if unsteered_roll:
             log("unsteered on purpose for", mid)
