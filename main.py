@@ -27,6 +27,10 @@ STATE = STATE_DIR / "state.json"
 LOG = STATE_DIR / "wirehead.log"
 POLL_SECS = int(os.environ.get("POLL_SECS", "60"))
 ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "dkcntqsm9y6n0g")
+# The deluded lane (exp92): a share of steered runs routes to the 32B
+# deluded persona endpoint instead of the base chamber. Empty/0 disables.
+DELUDED_ENDPOINT = os.environ.get("WIREHEAD_DELUDED_ENDPOINT", "")
+DELUDED_P = float(os.environ.get("WIREHEAD_DELUDED_P", "0"))
 # the live chamber's room: each steered reply is entered into the current
 # round's draw; if drawn it replays for everyone on wirehead.agency (labelled
 # via X, no handles). Token-gated on the relay; off without the token.
@@ -780,8 +784,14 @@ def clean_reply(text, max_sentences=3):
 def run_job(post, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
     inp = job_input(post, valence, dose, mix, topic)
+    ep = ENDPOINT
+    # the deluded lane: a sampled share of runs speaks as the 32B persona
+    # (adapter active; steering vectors still apply on top of it)
+    if DELUDED_ENDPOINT and DELUDED_P > 0 and random.random() < DELUDED_P:
+        ep = DELUDED_ENDPOINT
+        log("routing to deluded lane")
     req = urllib.request.Request(
-        f"https://api.runpod.ai/v2/{ENDPOINT}/run",
+        f"https://api.runpod.ai/v2/{ep}/run",
         data=json.dumps({"input": inp}).encode(), method="POST",
         headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json",
@@ -800,7 +810,7 @@ def run_job(post, valence, dose, mix=None, desc="", topic=""):
         time.sleep(3)
         try:
             s = json.load(urllib.request.urlopen(urllib.request.Request(
-                f"https://api.runpod.ai/v2/{ENDPOINT}/status/{jid}",
+                f"https://api.runpod.ai/v2/{ep}/status/{jid}",
                 headers={"Authorization": f"Bearer {key}",
                          "User-Agent": "Mozilla/5.0"}), timeout=30))
         except Exception as e:
