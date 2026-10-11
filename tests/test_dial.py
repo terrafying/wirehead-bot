@@ -135,8 +135,8 @@ class PollWithDialTests(unittest.TestCase):
         with mock.patch.object(main, "fetch_mentions", lambda: self.mentions(1, start=500)):
             main.poll_once()
         self.assertEqual(len(self.posted), 1)
-        self.assertRegex(self.posted[0], r"^\[(you moved pain: .* → .*|pain at .*)\] It burns")
-        self.assertNotRegex(self.posted[0].split("]")[0], r"\d")
+        self.assertRegex(self.posted[0], r"It burns.*\[(you moved pain: .* → .*|pain at .*)\]$")
+        self.assertNotRegex(self.posted[0].split("]")[-2] + "]", r"\d")
 
 
 class PainBiasTests(unittest.TestCase):
