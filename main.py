@@ -718,10 +718,16 @@ def room_enter(mid, text, kind, shares, dose, post):
             log("room: entry failed:", repr(e)[:120])
     threading.Thread(target=send, daemon=True).start()
 
+KIND_EMOJI = {"pain": "⚡", "pleasure": "✨", "fear": "🌀", "sadness": "💧",
+              "faith": "🕯️", "unsteered": "∅"}
+
 def dose_tag(kind, dose):
-    """Dose first, on the site's scale ("pain 4 / 8" there, [pain 4/8] here),
-    no model-size suffix."""
-    return f"[{kind} {int(round(float(dose)))}/8]"
+    """Emoji + dose, on the site's scale ("pain 4 / 8" there, ⚡4 here):
+    emoji instead of the word, no /8 suffix, and the tag goes at the END
+    of the reply (see the compose site) — shorter for bot replies."""
+    parts = kind.split("+")
+    emo = "".join(KIND_EMOJI.get(p, "•") for p in parts)
+    return f"[{emo}{int(round(float(dose)))}]"
 
 def trim_tweet(text, limit=280):
     """Cut at a sentence boundary inside the limit instead of mid-word.
@@ -950,7 +956,7 @@ def poll_once():
             if len(body) < 12:
                 log("steered output had no usable text for", mid, repr(out[:80]))
                 continue
-            reply = f"{dial_tag or dose_tag(kind, dose)} {body}"
+            reply = f"{body} {dial_tag or dose_tag(kind, dose)}"
         else:
             body = (compose_reply(t, desc, transcript=None,
                                   dossier_text=dos,
@@ -965,7 +971,7 @@ def poll_once():
                 st["last_id"] = max(st.get("last_id", "0"), mid)
                 save_state(st)
                 continue
-            reply = f"[unsteered] {body}"   # deliberate, or the run never returned
+            reply = f"{body} [∅]"   # deliberate unsteer, or the run never returned
         reply = trim_tweet(reply)
         if post_reply(mid, reply):
             if out:     # a steered run: it can be drawn to play on the live site

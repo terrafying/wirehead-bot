@@ -71,7 +71,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_dose_tag_for_mix(self):
         shares, _ = main.clean_mix({"faith": 0.3, "pain": 0.7})
-        self.assertEqual(main.dose_tag(main.mix_kind(shares), 4), "[pain+faith 4/8]")
+        self.assertEqual(main.dose_tag(main.mix_kind(shares), 4), "[⚡🕯️4]")
 
     def test_bodily_names_map_to_worker_valences(self):
         self.assertEqual(main.bodily_name("laying an egg"), "egg")
