@@ -26,7 +26,7 @@ class DossierTests(unittest.TestCase):
         self.assertIn("profile: @someone", d)
         self.assertIn("on X since 2019", d)
         self.assertIn("120 followers", d)
-        self.assertIn("their bio, verbatim: i post about trains", d)
+        self.assertNotIn("bio", d)  # the bio is deliberately excluded
         self.assertIn("- the 401 is late again", d)
 
     def test_failure_returns_none(self):
