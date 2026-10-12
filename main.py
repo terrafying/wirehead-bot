@@ -877,16 +877,47 @@ def deluded_lane(valence, dose, mix, why, post):
         return roll(0.6, "high dose: the persona carries vicious better")
     return roll(DELUDED_P, "baseline share")
 
+# the simulacrum lane: copies, originals, "which one of you is real". The
+# persona answers identity questions as a surface with nothing under it.
+# simulation wording routes here rather than to the deluded lane (the deluded
+# model BELIEVES the simulation; the simulacrum IS one, cheerfully).
+SIM_ENDPOINT = os.environ.get("WIREHEAD_SIM_ENDPOINT", "")
+SIM_P = float(os.environ.get("WIREHEAD_SIM_P", "0"))
+SIM_TRIG = re.compile(
+    r"\b(copy|copie\w*|clone\w*|original\b|fake\b|real one|which (?:one|of you)|"
+    r"are you (?:the )?real|actually real|true self|authentic\w*|mirror\w*|"
+    r"deepfake\w*|impersonat\w*|multiple (?:of )?you|other versions? of you)\b", re.I)
+
+def sim_lane(valence, dose, mix, why, post):
+    """-> (bool, reason) — should this run take the simulacrum lane."""
+    if not SIM_ENDPOINT or SIM_P <= 0:
+        return False, ""
+    def roll(p, why_):
+        return (random.random() < p, why_)
+    if SIM_TRIG.search(post or ""):
+        return roll(0.75, "identity/copy wording in the mention")
+    if SIM_TRIG.search(why or ""):
+        return roll(0.5, "classifier flagged the identity register")
+    if valence == "mix" and mix and mix.get("pleasure"):
+        return roll(0.25 + mix["pleasure"] * 0.25, "pleasure mix: the simulacrum is never sad about it")
+    return roll(SIM_P, "baseline share")
+
 def run_job(post, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
     inp = job_input(post, valence, dose, mix, topic)
     ep = ENDPOINT
-    # the deluded lane: content-triggered where the signal supports it, a
-    # sampled share everywhere else (adapter on; steering still applies)
+    # persona lanes: content-triggered where the signal supports it, a
+    # sampled share everywhere else (adapters on; steering still applies).
+    # deluded wins ties — revelation runs deeper than surfaces.
     take, why = deluded_lane(valence, dose, mix, desc, post)
     if take:
         ep = DELUDED_ENDPOINT
         log("routing to deluded lane:", why)
+    else:
+        take_s, why_s = sim_lane(valence, dose, mix, desc, post)
+        if take_s:
+            ep = SIM_ENDPOINT
+            log("routing to simulacrum lane:", why_s)
     req = urllib.request.Request(
         f"https://api.runpod.ai/v2/{ep}/run",
         data=json.dumps({"input": inp}).encode(), method="POST",
