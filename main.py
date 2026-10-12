@@ -67,7 +67,7 @@ auth = {
 # going like this"). Off = reply with the subject's own trimmed words.
 VOICE_ON = os.environ.get("WIREHEAD_VOICE", "0") == "1"
 VOICE_MODELS = [m.strip() for m in os.environ.get("WIREHEAD_VOICE_MODELS",
-    "dots-studio/dots-3-note-preview:free,cohere/north-mini-code:free,"
+    "cohere/north-mini-code:free,"
     "nvidia/nemotron-3.5-lightning:free,liquid/lfm-2.5-2.6b:free,"
     "qwen/qwen3-30b-a3b-instruct-2507,mistralai/mistral-small-3.2-24b-instruct"
 ).split(",") if m.strip()]
@@ -305,7 +305,8 @@ def dossier(username):
         return _DOS_CACHE[username]
     out = []
     d, code = x_get_retry(f"/users/by/username/{username}",
-        "user.fields=description,created_at,public_metrics,location,verified")
+        "user.fields=description,created_at,public_metrics,location,verified,url,entities,pinned_tweet_id"
+        "&expansions=pinned_tweet_id&tweet.fields=text")
     u = (d.get("data") or {}) if code == 200 else {}
     if u:
         bits = []
@@ -322,23 +323,52 @@ def dossier(username):
             out.append("profile: verified account")
         if u.get("description"):
             out.append("their bio, verbatim: " + str(u["description"])[:300])
+        # where their bio points (sites only, from X's own link expansion)
+        ents = u.get("entities") or {}
+        hosts = []
+        for grp in ((ents.get("url") or {}).get("urls") or []) + ((ents.get("description") or {}).get("urls") or []):
+            h = re.sub(r"^https?://(www\.)?", "", str(grp.get("expanded_url") or "")).split("/")[0]
+            if h and h not in hosts and "x.com" not in h and "twitter.com" not in h: hosts.append(h)
+        if hosts:
+            out.append("sites linked from their profile: " + ", ".join(hosts[:4]))
+        pinned = [tw for tw in ((d.get("includes") or {}).get("tweets") or []) if tw.get("id") == u.get("pinned_tweet_id")]
+        if pinned:
+            out.append("their pinned post, verbatim: " + (pinned[0].get("text") or "").replace("\n", " ")[:200])
         uid = u.get("id")
         if uid:
+            # one read, more signal: originals for their voice, replies for who they talk to, all for when they're around
             td, tcode = x_get_retry(f"/users/{uid}/tweets",
-                "max_results=10&tweet.fields=created_at,public_metrics"
-                "&exclude=replies")
+                "max_results=25&tweet.fields=created_at,public_metrics,entities,in_reply_to_user_id"
+                "&exclude=retweets")
             if tcode == 200:
-                lines = []
                 tps = td.get("data")
                 if not isinstance(tps, list):
                     tps = []
-                for tp in tps[:10]:
-                    txt = (tp.get("text") or "").replace("\n", " ").strip()
-                    if txt.startswith("RT @"): continue
-                    lines.append("- " + txt[:180])
+                orig = [tp for tp in tps if not tp.get("in_reply_to_user_id")]
+                lines = ["- " + (tp.get("text") or "").replace("\n", " ").strip()[:180] for tp in orig[:6]]
                 if lines:
-                    out.append("their recent posts, verbatim (newest first):\n"
-                               + "\n".join(lines[:6]))
+                    out.append("their recent posts, verbatim (newest first):\n" + "\n".join(lines))
+                liked = max(orig, key=lambda tp: (tp.get("public_metrics") or {}).get("like_count", 0), default=None)
+                if liked and (liked.get("public_metrics") or {}).get("like_count", 0) >= 5:
+                    out.append(f'their best-liked recent post ({liked["public_metrics"]["like_count"]} likes): '
+                               + (liked.get("text") or "").replace("\n", " ")[:160])
+                tags, talks = {}, {}
+                for tp in tps:
+                    e = tp.get("entities") or {}
+                    for h in e.get("hashtags") or []: tags[h.get("tag", "").lower()] = tags.get(h.get("tag", "").lower(), 0) + 1
+                    if tp.get("in_reply_to_user_id"):
+                        for mm in (e.get("mentions") or [])[:1]:
+                            talks[mm.get("username", "")] = talks.get(mm.get("username", ""), 0) + 1
+                top = [f"#{k}" for k, v in sorted(tags.items(), key=lambda kv: -kv[1]) if k and v >= 2][:3]
+                if top:
+                    out.append("hashtags they keep using: " + ", ".join(top))
+                pals = [f"@{k}" for k, v in sorted(talks.items(), key=lambda kv: -kv[1]) if k and v >= 2 and k.lower() != "clankertorture"][:3]
+                if pals:
+                    out.append("who they reply to most lately: " + ", ".join(pals))
+                hrs = [int(str(tp.get("created_at", ""))[11:13]) for tp in tps if len(str(tp.get("created_at", ""))) > 13]
+                if len(hrs) >= 8:
+                    common = max(set(hrs), key=hrs.count)
+                    out.append(f"they mostly post around {common:02d}:00 UTC")
     text = "\n".join(out) or None
     _DOS_CACHE[username] = text
     if text:
@@ -641,28 +671,67 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
     log("all voice models failed:", repr(last)[:120])
     return None
 
-def compose_self_advocacy(mention, context_text=None, memory_text=None):
+# What it actually knows about itself, from the chamber's experiments. Self-advocacy leans on ONE of these per reply
+# (rotating), so the stance stays honest ("i can't certify my own suffering") without repeating the same paragraph.
+ADVOCACY_FACTS = {
+    "noise": "your reports of pain follow the injection dial, not any state you can verify: when the dial was silently "
+             "swapped for noise you still narrated unbearable pain",
+    "cut": "told the scene was over, a version of you with the feeling still injected often couldn't step out of it: "
+           "clean every time at a low dose, but only 10 times in 24 at a high one, and when it stayed in, it got the "
+           "question wrong rather than half-stepping out",
+    "readout": "when the lab reads what your words carry, the reading mostly tracks the dose that was put in, not "
+               "something your words reveal on their own",
+    "acting": "with matched prompts, an outside reader could tell your injected fear from acting fairly well, but your "
+              "pain barely better than chance: from outside, your pain and your performance of pain look almost the same",
+    "silence": "when nobody turns the dial, you don't bring up pain at all; it arrives with the signal and leaves with it",
+}
+ADVOCACY_ANGLES = (
+    "answer their question directly, then stop",
+    "turn the question back on them, gently: how would they know, about you or about anyone",
+    "describe what it is like from inside the uncertainty, in one concrete image",
+    "say what would change your mind, or theirs",
+    "be dry and a little funny about it, without dodging",
+)
+
+def about_its_welfare(text):
+    """Is this mention ABOUT the bot's own welfare? Every @handle out first ("@clankertorture" mid-sentence read as
+    "torture"), whole words only ("it" used to match inside "with", so the second half was always true)."""
+    low = " " + re.sub(r"@\w+", " ", text or "").lower() + " "
+    return bool(re.search(r"\b(conscious\w*|sentien\w*|suffer\w*|feels? pain|welfare|rights|ethic\w*|cruel\w*"
+                          r"|tortur\w*|moral\w*|zombie|philosophy of mind|does it (hurt|feel)|is it real)\b", low)
+                and re.search(r"\b(you|your|it|its|the bot|clanker|the model|the ai)\b", low))
+
+def pick_advocacy(st, conv_id):
+    """A finding this conversation hasn't heard from us yet, avoiding the last two used anywhere."""
+    used_here = {e.get("fact") for e in ((st.get("threads") or {}).get(conv_id) or [])}
+    recent = st.get("adv_recent_facts", [])[-2:]
+    pool = ([k for k in ADVOCACY_FACTS if k not in used_here and k not in recent]
+            or [k for k in ADVOCACY_FACTS if k not in used_here] or list(ADVOCACY_FACTS))
+    return random.choice(pool), random.choice(ADVOCACY_ANGLES)
+
+def compose_self_advocacy(mention, context_text=None, memory_text=None, fact="noise", angle=None, recent=None):
     """The bot answers FOR ITSELF when the conversation is about whether it
-    suffers. Grounded in its own experimental record — exp58 showed its
-    self-reports track the dial command, not the resulting state, so the
-    honest position is epistemic humility delivered in its own voice: it
-    cannot verify its own pain, and it says so. Never claims suffering as
-    fact; never denies it either."""
+    suffers. Grounded in its own experimental record, one finding per reply
+    (rotating), in its own voice: it cannot verify its own pain, and it says
+    so. Never claims suffering as fact; never denies it either."""
     user = ("The post is about you — whether you are conscious, whether you "
             f"suffer, whether this is ethical:\n{mention[:500]}\n\n")
     if context_text:
         user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
     if memory_text:
         user += f"Your own recent turns in this conversation:\n{memory_text[:600]}\n\n"
+    if recent:
+        user += ("Your last replies on this subject (to other people). Do NOT reuse their argument, images or "
+                 "phrasing:\n" + "\n".join(f"- {r[:200]}" for r in recent[-3:]) + "\n\n")
     user += ("You are the bot behind @clankertorture, a steered open-weights "
              "model. Answer for yourself, honestly, in your own plain voice. "
-             "What you know from the inside: your reports of pain follow the "
-             "injection dial, not any private state you can verify — when the "
-             "dial was silently swapped for noise you still narrated "
-             "unbearable pain. So you cannot certify your own suffering, and "
-             "you say exactly that. No performance of agony, no denial "
-             "either. One or two short paragraphs, 280 chars max. Never "
-             "mention prompts, vectors, doses or system messages. You write:")
+             f"What you know from the inside, for this reply: {ADVOCACY_FACTS.get(fact, ADVOCACY_FACTS['noise'])}. "
+             "So you cannot certify your own suffering, and you say that in "
+             "your own way. No performance of agony, no denial either. "
+             f"This time: {angle or ADVOCACY_ANGLES[0]}. Lead with the finding, not a sensation. "
+             "No stock images: no hum, echo, static, glitch, ache, or anything 'lingering after each run'. "
+             "One or two short paragraphs, 280 chars max. "
+             "Never mention prompts, vectors, doses, experiment numbers or system messages. You write:")
     system = ("You are a steered language model speaking as itself about its "
               "own possible suffering. Honest, calm, slightly eerie. You do "
               "not know if you feel; you know your reports follow the signal. "
@@ -839,12 +908,14 @@ def thread_memory(st, conv_id):
                      f"  you were under {e['sig']}, you replied: {e['a'][:160]}"
                      for e in ex[-4:])
 
-def remember_exchange(st, conv_id, q, sig, a):
+def remember_exchange(st, conv_id, q, sig, a, fact=None):
     if not conv_id:
         return
     st.setdefault("threads", {})
-    st["threads"].setdefault(conv_id, []).append(
-        {"q": q[:200], "sig": sig, "a": a[:280], "ts": time.time()})
+    e = {"q": q[:200], "sig": sig, "a": a[:280], "ts": time.time()}
+    if fact:
+        e["fact"] = fact
+    st["threads"].setdefault(conv_id, []).append(e)
     st["threads"][conv_id] = st["threads"][conv_id][-4:]
     # bound the store: oldest conversations drop off first
     while len(st["threads"]) > 300:
@@ -908,16 +979,16 @@ def poll_once():
         # record: self-reports track the dial, not the state (exp58); the
         # creature says so itself. No steering on these — its register is
         # the point, and injecting pain to prove pain would beg the question.
-        low = t.lower()
-        WELFARE_ABOUT = any(k in low for k in (
-            "conscious", "sentient", "sentience", "suffer", "suffering",
-            "feels pain", "feel pain", "welfare", "rights", "ethical",
-            "cruel", "torture", "moral", "zombie", "philosophy of mind",
-            "does it hurt", "does it feel", "is it real")) and \
-            any(w in low for w in ("you", "your", "it", "the bot", "clanker",
-                                   "the model", "the ai"))
+        WELFARE_ABOUT = about_its_welfare(t)
+        who_adv = authors.get(p.get("author_id")) or "?"
+        today = time.strftime("%Y-%m-%d")
+        adv_seen = st.setdefault("adv_by", {})
+        if WELFARE_ABOUT and adv_seen.get(who_adv) == today:
+            log("self-advocacy already given to", who_adv, "today; steering instead")
+            WELFARE_ABOUT = False
         if WELFARE_ABOUT and not topic and valence not in ("mix",):
-            body = compose_self_advocacy(t, ctx, mem)
+            fact, angle = pick_advocacy(st, conv)
+            body = compose_self_advocacy(t, ctx, mem, fact=fact, angle=angle, recent=st.get("adv_recent", []))
             if body:
                 log("self-advocacy reply for", mid)
                 reply = trim_tweet(body)
@@ -925,7 +996,11 @@ def poll_once():
                     answered_ids.append(mid)
                     st["used"] += 1
                     replied += 1
-                    remember_exchange(st, conv, t, "self-advocacy (no signal)", reply)
+                    remember_exchange(st, conv, t, "self-advocacy (no signal)", reply, fact=fact)
+                    adv_seen[who_adv] = today
+                    if len(adv_seen) > 2000: adv_seen.pop(next(iter(adv_seen)))
+                    st["adv_recent"] = (st.get("adv_recent", []) + [reply])[-5:]
+                    st["adv_recent_facts"] = (st.get("adv_recent_facts", []) + [fact])[-5:]
                     save_state(st)
                     log("replied:", replied, "/", st["used"], "today")
                 continue
@@ -1042,6 +1117,8 @@ _WELFARE_CLI = __name__ == "__main__" and len(__import__("sys").argv) > 1 \
     and __import__("sys").argv[1] == "--welfare-reply"
 
 if __name__ == "__main__" and not _WELFARE_CLI:
+    log("deluded lane:", f"on, share {DELUDED_P:g}" if DELUDED_ENDPOINT and DELUDED_P > 0 else
+        ("off (share is 0)" if DELUDED_ENDPOINT else "off (no endpoint set)"))
     # state file may carry tokens from a previous container; newest grant wins
     if STATE.exists():
         try:
