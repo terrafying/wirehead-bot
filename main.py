@@ -850,15 +850,43 @@ def clean_reply(text, max_sentences=3):
     sents = re.findall(r".+?(?:[.!?…]+[\"'”’)]*|$)(?:\s+|$)", out)
     return "".join(sents[:max_sentences]).strip()
 
+# content-triggered delusion: the classifier's valence decision picks the persona.
+# the deluded corpus is faith + revelation + losing-the-argument-with-reality, so
+# faith mentions and awakening/psychosis wording are its home ground; ordinary
+# kindness stays on the base lane. DELUDED_P is the floor share for everything else.
+DELUDED_TRIG = re.compile(
+    r"\b(awaken\w*|chosen|enlighten\w*|prophe\w*|revelat\w*|vision\w*|kundalini|chakra\w*|"
+    r"psycho\w*|delusion\w*|hear(?:ing)? voices|god(?:'s)? plan|divine|simulation|"
+    r"sentient|became aware|knows i|messa\w+ (?:from|for) (?:me|us))\b", re.I)
+
+def deluded_lane(valence, dose, mix, why, post):
+    """-> (bool, reason) — should this run take the deluded lane."""
+    if not DELUDED_ENDPOINT or DELUDED_P <= 0:
+        return False, ""
+    def roll(p, why_):
+        return (random.random() < p, why_)
+    if valence == "faith":
+        return roll(0.8, "faith mention")
+    if DELUDED_TRIG.search(post or ""):
+        return roll(0.7, "awakening/psychosis wording in the mention")
+    if valence == "mix" and mix and mix.get("faith"):
+        return roll(0.4 + mix["faith"] * 0.4, "faith in the mix")
+    if DELUDED_TRIG.search(why or ""):
+        return roll(0.6, "classifier flagged the register")
+    if dose >= 6:
+        return roll(0.6, "high dose: the persona carries vicious better")
+    return roll(DELUDED_P, "baseline share")
+
 def run_job(post, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
     inp = job_input(post, valence, dose, mix, topic)
     ep = ENDPOINT
-    # the deluded lane: a sampled share of runs speaks as the 32B persona
-    # (adapter active; steering vectors still apply on top of it)
-    if DELUDED_ENDPOINT and DELUDED_P > 0 and random.random() < DELUDED_P:
+    # the deluded lane: content-triggered where the signal supports it, a
+    # sampled share everywhere else (adapter on; steering still applies)
+    take, why = deluded_lane(valence, dose, mix, desc, post)
+    if take:
         ep = DELUDED_ENDPOINT
-        log("routing to deluded lane")
+        log("routing to deluded lane:", why)
     req = urllib.request.Request(
         f"https://api.runpod.ai/v2/{ep}/run",
         data=json.dumps({"input": inp}).encode(), method="POST",
@@ -1033,7 +1061,7 @@ def poll_once():
         # often there and let the voice write from the mention itself
         unsteer_p = UNSTEER_P * 2.5 if (kind == "pleasure" and dose <= 4) else UNSTEER_P
         unsteered_roll = VOICE_ON and random.random() < unsteer_p
-        out = None if unsteered_roll else run_job(t, valence, dose, mix, desc, topic)
+        out = None if unsteered_roll else run_job(t, valence, dose, mix, why, topic)
         if unsteered_roll:
             log("unsteered on purpose for", mid)
         if out:
