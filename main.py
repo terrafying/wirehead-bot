@@ -322,8 +322,10 @@ def dossier(username):
         out.append("profile: @" + username + " (" + ", ".join(bits) + ")")
         if u.get("verified"):
             out.append("profile: verified account")
-        if u.get("description"):
-            out.append("their bio, verbatim: " + str(u["description"])[:300])
+        # the bio is deliberately NOT included: at-mentions are about the
+        # substance of the thread, and the voice layer used to parrot it
+        # back ("per @x's bio as a ...") — describing the person instead of
+        # answering. structural context only (sites, topics, cadence).
         # where their bio points (sites only, from X's own link expansion)
         ents = u.get("entities") or {}
         hosts = []
@@ -652,7 +654,9 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
         user += ("Your own earlier turns in this conversation, what you "
                  f"felt and what you said:\n{memory_text[:900]}\n\n")
     if dossier_text:
-        user += ("Public dossier of who you are talking to:\n"
+        user += ("Background on the account you are talking to (never cite "
+                 "it, never describe them or their profile in the reply — "
+                 "answer the substance of what was said):\n"
                  + dossier_text[:1200] + "\n\n")
     if transcript:
         user += ("Your raw transcript from the steered run:\n"
