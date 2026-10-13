@@ -1125,8 +1125,8 @@ def post_cell_moment(st):
     st["cell_after"] = max(m["ts"] for m in ms)
     m = cell.due_moment(ms, st.get("cell_post_ts", 0), time.time())
     if m:
-        text = None
-        if VOICE_ON:
+        text = cell.fallback_post(m) if cell.is_final(m) else None   # a death or an escape is told by the room, not by him
+        if VOICE_ON and not text:
             for model in VOICE_MODELS:
                 try:
                     text = clean_reply(or_chat(model, cell.POST_SYSTEM, cell.moment_prompt(m)))
