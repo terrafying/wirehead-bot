@@ -1253,7 +1253,10 @@ def poll_once():
             valence = "mix" if len(shares) > 1 else next(iter(shares))
             shares = shares if valence == "mix" else None
             dose = int(round(dose))
-            dial_tag = dial.tag(summary, mine) or f"[{mine} at {dial.word(dial.state(st)['levels'].get(mine, 0))}]"
+            if inj is not None:   # the cell holds the mood (the site's pushes too), so the tag reads from it
+                dial_tag = f"[{mine} at {dial.word((inj[0] or {}).get(mine, 0) * inj[1])}]"
+            else:
+                dial_tag = dial.tag(summary, mine) or f"[{mine} at {dial.word(dial.state(st)['levels'].get(mine, 0))}]"
         mix = mix_weights(shares, dose) if shares else None
         kind = mix_kind(shares) if shares else (topic or valence)
         desc = f"{kind} at {dose}x ({why})"

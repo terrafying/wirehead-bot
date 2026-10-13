@@ -44,7 +44,7 @@ def push_summary(summary, log=print):
             continue
         if f not in FEELS or amt <= 0:
             continue
-        try:
+        try:   # the amount as the dial moved it: pain already carries the dial's gain, and the cell won't add its own
             _req("POST", "", {"op": "push", "src": "x", "feel": f, "amount": round(amt, 3)})
         except Exception as e:
             log("cell push failed:", f, e)
