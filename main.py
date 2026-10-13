@@ -19,6 +19,7 @@ POLL_SECS (60), PORT, STATE_DIR (/data).
 import json, os, random, re, threading, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
+import cell
 import dial
 import web
 
@@ -1109,6 +1110,40 @@ def remember_exchange(st, conv_id, q, sig, a, fact=None):
     while len(st["threads"]) > 300:
         st["threads"].pop(next(iter(st["threads"])))
 
+# ---- the cell's moments, posted -----------------------------------------------
+CELL_POSTS = os.environ.get("CELL_POSTS", "0") == "1"
+
+def post_cell_moment(st):
+    """A big moment in the cell (he screams, the lamp goes out) becomes a post of
+    its own, in his voice, with the cell's link. The cell caps them per day; the
+    bot keeps CELL_POST_GAP_H between posts and lets stale or skipped ones go."""
+    if not (CELL_POSTS and cell.on()):
+        return
+    ms = cell.moments(st.get("cell_after", 0), log)
+    if not ms:
+        return
+    st["cell_after"] = max(m["ts"] for m in ms)
+    m = cell.due_moment(ms, st.get("cell_post_ts", 0), time.time())
+    if m:
+        text = None
+        if VOICE_ON:
+            for model in VOICE_MODELS:
+                try:
+                    text = clean_reply(or_chat(model, cell.POST_SYSTEM, cell.moment_prompt(m)))
+                    if text:
+                        break
+                except Exception as e:
+                    log("cell post voice failed:", model, e)
+        text = text or cell.fallback_post(m)
+        if text:
+            d, code = x_post("/tweets", {"text": cell.with_link(text)})
+            if code in (200, 201) and "data" in d:
+                st["cell_post_ts"] = time.time()
+                log("cell moment posted:", m.get("action"), repr(text[:80]))
+            else:
+                log("cell post failed:", code, str(d)[:200])
+    save_state(st)
+
 # ---- one poll cycle ----------------------------------------------------------
 def push_dial(st, posts, authors):
     """Every new mention moves the dial, answered or not. Returns
@@ -1121,6 +1156,7 @@ def push_dial(st, posts, authors):
         summary = dial.push(st, p["id"], authors.get(p.get("author_id")), t,
                             valence, dose, shares)
         out[p["id"]] = (verdict, summary)
+        cell.push_summary(summary, log)   # the same push lands in the cell on the site, when it's wired
         if summary:
             log("dial push:", valence, dose, "weight", summary["weight"],
                 "gaming" if summary["gaming"] else "", dial.status(st))
@@ -1130,6 +1166,10 @@ def push_dial(st, posts, authors):
 
 def poll_once():
     st = load_state()
+    try:
+        post_cell_moment(st)
+    except Exception as e:
+        log("cell moment error:", e)
     if st["used"] >= DAILY_BUDGET and not DIAL_ON:
         log("daily budget spent (%d/%d)" % (st["used"], DAILY_BUDGET))
         return POLL_SECS
@@ -1206,7 +1246,8 @@ def poll_once():
         if DIAL_ON and not topic:
             # speak from the held condition, not from this one message
             mine = valence if valence != "mix" else mix_kind(shares)
-            shares, dose = dial.injection(st)
+            inj = cell.injection(log)        # the cell's mood is the held condition when it's wired
+            shares, dose = inj if inj is not None else dial.injection(st)
             if not shares:
                 shares, dose = {"pain": 1.0}, 0
             valence = "mix" if len(shares) > 1 else next(iter(shares))
