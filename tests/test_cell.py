@@ -25,6 +25,11 @@ class CellTests(unittest.TestCase):
              mock.patch.object(cell, "_req", lambda m, p, b=None, timeout=8: sent.append(b)):
             cell.push_summary({"moved": {"pleasure": (0, 0.5), "pain": (2, 1.75), "fear": (1, 1)}})
         self.assertEqual(sent, [{"op": "push", "src": "x", "feel": "pleasure", "amount": 0.5}])
+        sent.clear()
+        with mock.patch.object(cell, "CELL_URL", "https://x"), mock.patch.object(cell, "CELL_KEY", "k"), \
+             mock.patch.object(cell, "_req", lambda m, p, b=None, timeout=8: sent.append(b)):
+            cell.push_summary({"moved": {"pain": (2, 3.5)}})   # the dial's 1.5x already in the delta
+        self.assertEqual(sent, [{"op": "push", "src": "x", "feel": "pain", "amount": 1.5}])
 
     def test_injection_matches_the_dial_shape(self):
         shares, dose = cell.to_injection({"pain": 2, "fear": 2, "faith": 0})
