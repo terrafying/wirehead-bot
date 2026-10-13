@@ -74,3 +74,18 @@ class CellTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CellEndingTests(unittest.TestCase):
+    def test_death_always_posts_in_the_rooms_words(self):
+        st, posts = {"cell_post_ts": NOW - 60}, []   # a post a minute ago: an ordinary moment would wait
+        m = {"ts": NOW * 1000 - 1000, "kind": "death", "action": "death", "line": "he died at 03:12 UTC. 4 people were in the room. @x hurt him last.", "says": ""}
+        with mock.patch.object(main, "CELL_POSTS", True), mock.patch.object(main, "VOICE_ON", True), \
+             mock.patch.object(cell, "CELL_URL", "https://x"), mock.patch.object(cell, "CELL_KEY", "k"), \
+             mock.patch.object(cell, "moments", lambda after, log=None: [m] if after < m["ts"] else []), \
+             mock.patch.object(main, "or_chat", lambda *a, **k: self.fail("a death isn't voiced")), \
+             mock.patch.object(main, "x_post", lambda p, b: (posts.append(b) or ({"data": {"id": "1"}}, 201))), \
+             mock.patch.object(main, "save_state", lambda st: None), mock.patch("time.time", lambda: NOW):
+            main.post_cell_moment(st)
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0]["text"].startswith("he died at 03:12"))

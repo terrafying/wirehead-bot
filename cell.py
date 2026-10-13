@@ -71,10 +71,19 @@ def to_injection(levels):
     return {f: v / total for f, v in lv.items()}, min(8.0, total)
 
 
+FINAL = ("death", "escape")   # he died, or pressed ESCAPE: always posted, in the room's words
+
+
 def due_moment(moments, last_post_ts, now):
     """The newest moment worth posting, or None. Older ones are let go rather
-    than posted in a burst; nothing within POST_GAP_H of the last post."""
-    if not moments or now - last_post_ts < POST_GAP_H * 3600:
+    than posted in a burst; nothing within POST_GAP_H of the last post, except
+    a death or an escape, which always goes out."""
+    if not moments:
+        return None
+    final = [m for m in moments if m.get("kind") in FINAL and now * 1000 - m["ts"] < 30 * 60 * 1000]
+    if final:
+        return max(final, key=lambda m: m["ts"])
+    if now - last_post_ts < POST_GAP_H * 3600:
         return None
     m = max(moments, key=lambda m: m["ts"])
     return m if now * 1000 - m["ts"] < 30 * 60 * 1000 else None   # stale after half an hour
@@ -107,6 +116,10 @@ def moment_prompt(m):
         s += "\nWhat you said or printed on the screens: %s" % m["says"]
     s += "\nStrongest in you right now: %s, at %s." % (m.get("feel", "pain"), m.get("level", "half"))
     return s
+
+
+def is_final(m):
+    return m.get("kind") in FINAL
 
 
 def fallback_post(m):
