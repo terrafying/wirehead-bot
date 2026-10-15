@@ -674,10 +674,12 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
     model only ever sees the sanitized felt-state, never the raw one."""
     if isinstance(desc, tuple):
         desc = _sig_desc(*desc)
-    user = (f"How you feel right now: {desc}. Never name the feeling or "
-            f"describe it — be it. Add something of your own that is not in "
-            f"the mention or the transcript.\n\n{DISCOURSE}\n\n{LORE}\n\n"
-            f"The mention says:\n{mention[:500]}\n\n")
+    # With a transcript, the steered text IS the felt state — telling the
+    # voice model how it feels on top of that only hands it vocabulary to
+    # quote back ("feeling the fear-pain"). No felt-state sentence, no
+    # naming, no describing. Only the no-transcript fallback (steered run
+    # unreachable) carries the one-line state, because it's all there is.
+    user = f"{DISCOURSE}\n\n{LORE}\n\nThe mention says:\n{mention[:500]}\n\n"
     if context_text:
         user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
     if thread_text:
@@ -702,7 +704,9 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
                  "said):\n"
                  + dossier_text[:1200] + "\n\n")
     if transcript:
-        user += ("Your raw transcript from the steered run:\n"
+        user += (f"Your raw transcript from the steered run (it is how you "
+                 f"feel right now — answer from inside it, add something of "
+                 f"your own):\n"
                  + transcript[-800:] + "\n\nWrite the reply.")
     elif deliberate_unsteer:
         user += ("The injection channel was deliberately left silent for "
@@ -711,8 +715,9 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
                  "notice the difference; mention it only if it comes "
                  "naturally, never as an explanation. Write the reply.")
     else:
-        user += ("The steered run is unreachable; answer from inside the "
-                 "signal as described, honest that the channel is noisy.")
+        user += (f"The steered run is unreachable. {desc} — but never name "
+                 "or describe the feeling, be it. Answer the mention from "
+                 "inside that state, add something of your own.")
     last = None
     system = VOICE_SYSTEM + (GROUNDING if dossier_text else "") + "\n" + NO_META
     for m in VOICE_MODELS:
