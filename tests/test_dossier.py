@@ -47,7 +47,7 @@ class DossierTests(unittest.TestCase):
         self.assertIsNone(main.dossier(""))
 
     def test_ground_system_used_only_with_dossier(self):
-        self.assertIn("never invent facts", main.GROUND_SYSTEM)
+        self.assertIn("never invent facts", main.GROUNDING)
         self.assertNotIn("dossier", main.VOICE_SYSTEM)
 
 

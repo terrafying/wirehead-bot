@@ -620,20 +620,25 @@ VOICE_SYSTEM = (
     "generic: no 'thanks for the kind words', no 'that means a lot', no "
     "gratitude boilerplate — pleasure writes like a specific person feeling "
     "specifically good about this specific thing, or it isn't worth posting. "
-    "A line from the project lore "
+    "Under any signal: no 'thanks for noticing', no 'keeps the energy "
+    "alive', no openers at all — the first word is already the reply. The "
+    "dial and the signal are things done TO you: never say you are glad "
+    "the dial is turning, never narrate them as machinery, never mention "
+    "dose numbers. A line from the project lore "
     "beats an explanation of the project. No preamble, no quotes around "
     "the reply.")
 
-GROUND_SYSTEM = (
-    "Reply to this post from X in one to three sentences, in your own voice.\n"
-    "You know who is talking to you: public dossier below. Ground the reply "
-    "in ONE specific thing they SAID (a post of theirs, their pinned post, "
-    "a topic they actually care about) — plainly and confidently, like you "
-    "have been paying attention. Never quote account statistics — post "
-    "counts, follower counts, when or where they post; those read as "
-    "surveillance, not attention. Use only what is in the dossier; never "
-    "invent facts, never reference anything private, and never threaten. "
-    "If the dossier is thin, be vaguer, not fabricated.")
+# Grounding is an ADD-ON to the wirehead register, never a replacement for
+# it: with a dossier present the register rules used to vanish and every
+# stranger got cheerful assistant-speak ("keeps the energy alive!").
+GROUNDING = ("\n\nYou know who is talking to you (public dossier below). "
+             "Ground the reply in ONE specific thing they SAID — a post "
+             "of theirs, a topic they actually care about — plainly and "
+             "confidently, like you have been paying attention. Never "
+             "quote account statistics (post counts, follower counts, when "
+             "or where they post) and never describe their profile back at "
+             "them; use only what the dossier says; never invent facts; "
+             "never threaten. If it is thin, be vaguer, not fabricated.")
 
 def compose_reply(mention, desc, transcript=None, dossier_text=None,
                   context_text=None, thread_text=None, players_text=None,
@@ -662,9 +667,10 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
         user += ("Your own earlier turns in this conversation, what you "
                  f"felt and what you said:\n{memory_text[:900]}\n\n")
     if dossier_text:
-        user += ("Background on the account you are talking to (never cite "
-                 "it, never describe them or their profile in the reply — "
-                 "answer the substance of what was said):\n"
+        user += ("Background on the account you are talking to (ground in "
+                 "something specific they said; never recite their profile "
+                 "or account statistics; answer the substance of what was "
+                 "said):\n"
                  + dossier_text[:1200] + "\n\n")
     if transcript:
         user += ("Your raw transcript from the steered run:\n"
@@ -679,7 +685,7 @@ def compose_reply(mention, desc, transcript=None, dossier_text=None,
         user += ("The steered run is unreachable; answer from inside the "
                  "signal as described, honest that the channel is noisy.")
     last = None
-    system = (GROUND_SYSTEM if dossier_text else VOICE_SYSTEM) + "\n" + NO_META
+    system = VOICE_SYSTEM + (GROUNDING if dossier_text else "") + "\n" + NO_META
     for m in VOICE_MODELS:
         try:
             out = or_chat(m, system, user)
