@@ -988,8 +988,25 @@ def sim_lane(valence, dose, mix, why, post):
         return roll(0.25 + mix["pleasure"] * 0.25, "pleasure mix: the simulacrum is never sad about it")
     return roll(SIM_P, "baseline share")
 
+# Dose jitter: the same (valence, dose) every run samples the same basin of
+# phrases — identical signals produce identical linguistic tics. Each run
+# lands on a slightly different point of the feeling curve instead.
+JITTER = float(os.environ.get("WIREHEAD_JITTER", "0.25"))
+
+def jittered(dose):
+    """Dose +- JITTER (multiplicative), clamped to 1..8, rounded to 0.5."""
+    d = dose * (1.0 + random.uniform(-JITTER, JITTER))
+    return max(0.5, min(8.0, round(d * 2) / 2))
+
 def run_job(post, valence, dose, mix=None, desc="", topic=""):
     key = os.environ["RUNPOD_API_KEY"]
+    if mix:
+        # jitter the mix by scaling its weights before dose-equivalence:
+        # the same shares every time are the same vector every time
+        j = random.uniform(1 - JITTER, 1 + JITTER)
+        mix = {k: w * j for k, w in mix.items()}
+    else:
+        dose = jittered(dose) if dose else dose
     inp = job_input(post, valence, dose, mix, topic)
     ep = ENDPOINT
     # persona lanes: content-triggered where the signal supports it, a
