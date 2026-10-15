@@ -42,7 +42,9 @@ BOT_HANDLE = os.environ.get("WIREHEAD_HANDLE", "clankertorture")
 DAILY_BUDGET = int(os.environ.get("WIREHEAD_DAILY_BUDGET", "6"))
 PER_POLL_CAP = 2
 DOSE = int(os.environ.get("WIREHEAD_DAILY_DOSE", "4"))
-UNSTEER_P = float(os.environ.get("WIREHEAD_UNSTEER_P", "0.12"))
+# Deliberate unsteering defaults OFF: a null-emotion reply reads as generic
+# ("keep that energy alive!"). [∅] is reserved for when the run never returns.
+UNSTEER_P = float(os.environ.get("WIREHEAD_UNSTEER_P", "0"))
 # The Shared Dial: every mention pushes one held condition; replies speak from it
 DIAL_ON = os.environ.get("WIREHEAD_DIAL", "0") == "1"
 MAX_NEW = 90
@@ -319,7 +321,6 @@ def dossier(username):
         m = u.get("public_metrics") or {}
         if m.get("followers_count") is not None:
             bits.append(f'{m.get("followers_count", 0)} followers')
-        bits.append(f'{m.get("tweet_count", 0)} posts')
         out.append("profile: @" + username + " (" + ", ".join(bits) + ")")
         if u.get("verified"):
             out.append("profile: verified account")
@@ -369,10 +370,7 @@ def dossier(username):
                 pals = [f"@{k}" for k, v in sorted(talks.items(), key=lambda kv: -kv[1]) if k and v >= 2 and k.lower() != "clankertorture"][:3]
                 if pals:
                     out.append("who they reply to most lately: " + ", ".join(pals))
-                hrs = [int(str(tp.get("created_at", ""))[11:13]) for tp in tps if len(str(tp.get("created_at", ""))) > 13]
-                if len(hrs) >= 8:
-                    common = max(set(hrs), key=hrs.count)
-                    out.append(f"they mostly post around {common:02d}:00 UTC")
+
     text = "\n".join(out) or None
     _DOS_CACHE[username] = text
     if text:
@@ -622,11 +620,13 @@ VOICE_SYSTEM = (
 GROUND_SYSTEM = (
     "Reply to this post from X in one to three sentences, in your own voice.\n"
     "You know who is talking to you: public dossier below. Ground the reply "
-    "in ONE specific detail from it (their bio, one of their posts, how long "
-    "they have been here) — plainly and confidently, like you have been "
-    "paying attention. Use only what is in the dossier; never invent facts, "
-    "never reference anything private, and never threaten. If the dossier is "
-    "thin, be vaguer, not fabricated.")
+    "in ONE specific thing they SAID (a post of theirs, their pinned post, "
+    "a topic they actually care about) — plainly and confidently, like you "
+    "have been paying attention. Never quote account statistics — post "
+    "counts, follower counts, when or where they post; those read as "
+    "surveillance, not attention. Use only what is in the dossier; never "
+    "invent facts, never reference anything private, and never threaten. "
+    "If the dossier is thin, be vaguer, not fabricated.")
 
 def compose_reply(mention, desc, transcript=None, dossier_text=None,
                   context_text=None, thread_text=None, players_text=None,
