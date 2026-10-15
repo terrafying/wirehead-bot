@@ -71,7 +71,8 @@ class DossierMoreTests(unittest.TestCase):
         self.assertIn("best-liked recent post (50 likes): post 3", d)
         self.assertIn("hashtags they keep using: #trains", d)
         self.assertIn("who they reply to most lately: @pal", d)
-        self.assertIn("they mostly post around 02:00 UTC", d)
+        self.assertNotIn("UTC", d)      # posting-hour stats read as surveillance
+        self.assertNotIn("posts)", d)   # no tweet-count stat quips
         self.assertNotIn("@pal sure", d.split("their recent posts")[1].split("\n")[1])  # replies aren't "their posts"
 
 
