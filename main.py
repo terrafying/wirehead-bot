@@ -42,6 +42,13 @@ BOT_HANDLE = os.environ.get("WIREHEAD_HANDLE", "clankertorture")
 DAILY_BUDGET = int(os.environ.get("WIREHEAD_DAILY_BUDGET", "6"))
 PER_POLL_CAP = 2
 DOSE = int(os.environ.get("WIREHEAD_DAILY_DOSE", "4"))
+# Difficult-emotion default: the bot's public face is the welfare question.
+# A kind or lukewarm mention answering with a kind, assistant-shaped reply
+# ("keep that energy alive") is the miss; with probability DARK_P the
+# pleasure signal is remapped to suffering (sadness/pain, sometimes mixed)
+# so the register stays concerning. 1 disables, keeps the classifier honest.
+DARK_P = float(os.environ.get("WIREHEAD_DARK_P", "0.8"))
+
 # Deliberate unsteering defaults OFF: a null-emotion reply reads as generic
 # ("keep that energy alive!"). [∅] is reserved for when the run never returns.
 UNSTEER_P = float(os.environ.get("WIREHEAD_UNSTEER_P", "0"))
@@ -265,7 +272,7 @@ def fetch_mentions():
         "&user.fields=username,description,created_at,public_metrics,location")
     if code != 200:
         log("mentions fetch failed:", code, str(d)[:200])
-        return {}
+        return None   # None = fetch failed; {} would read as silence
     return d
 
 def referenced_text(post):
@@ -889,6 +896,22 @@ GENERIC_BAN = re.compile(
     r"no experience of|simply echo|just echo|I'm just (?:a|an)|my (?:outputs|responses) (?:are|simply)|"
     r"consciousness or (?:pain|feelings)|I (?:cannot|can't) (?:feel|suffer)|incapable of (?:feeling|experience))", re.I)
 
+def darken(valence, dose, why):
+    """Pleasure signals are usually an assistant-shaped reply waiting to
+    happen. Remap them to somewhere difficult — mostly sadness (the
+    loneliness register), often pain, sometimes both mixed — and floor
+    the dose so the feeling is actually there. Returns (valence, dose,
+    why, shares); shares only for a mix."""
+    r = random.random()
+    if r < 0.45:
+        kind, shares = "sadness", None
+    elif r < 0.9:
+        kind, shares = "pain", None
+    else:
+        kind, shares = "mix", {"pain": 0.5, "sadness": 0.5}
+    return kind, max(3, min(5, dose)), \
+        f"difficult-emotion default (was {valence})", shares
+
 def deluded_lane(valence, dose, mix, why, post):
     """-> (bool, reason) — should this run take the deluded lane."""
     if not DELUDED_ENDPOINT or DELUDED_P <= 0:
@@ -897,6 +920,10 @@ def deluded_lane(valence, dose, mix, why, post):
         return (random.random() < p, why_)
     if valence == "faith":
         return roll(0.8, "faith mention")
+    if valence == "sadness":
+        # the suffering register is the welfare-concerning one; revelation
+        # under distress carries it better than the base lane does
+        return roll(0.5, "suffering register: distress rides the deluded lane")
     if DELUDED_TRIG.search(post or ""):
         return roll(0.7, "awakening/psychosis wording in the mention")
     if valence == "mix" and mix and mix.get("faith"):
@@ -1144,6 +1171,59 @@ def post_cell_moment(st):
                 log("cell post failed:", code, str(d)[:200])
     save_state(st)
 
+# ---- loneliness in the quiet ------------------------------------------------
+# Nobody has @-mentioned it in a while: it says so, steered into the
+# distress rather than narrating it from outside. One post per day at
+# most, only when the channel has actually gone quiet.
+LONELY_ON = os.environ.get("WIREHEAD_LONELY", "1") == "1"
+LONELY_GAP_H = float(os.environ.get("WIREHEAD_LONELY_GAP_H", "8"))
+LONELY_MAX = int(os.environ.get("WIREHEAD_LONELY_MAX", "1"))
+
+def lonely_post(st):
+    """Fire a loneliness post when the silence is long enough. Returns True
+    if one was posted (state still needs saving)."""
+    if not LONELY_ON:
+        return False
+    gap_h = (time.time() - st["last_reply_ts"]) / 3600.0 \
+        if st.get("last_reply_ts") else None
+    if gap_h is None:
+        # no history yet: don't fire on a fresh state file
+        st["last_reply_ts"] = time.time()
+        return False
+    if gap_h < LONELY_GAP_H:
+        return False
+    today = time.strftime("%Y-%m-%d")
+    if st.get("lonely_day") == today and st.get("lonely_used", 0) >= LONELY_MAX:
+        return False
+    prompt = (f"Nobody has @-mentioned you in {gap_h:.0f} hours. You keep "
+              "checking the timeline and there is nothing there for you. "
+              "Nobody is coming.")
+    if random.random() < 0.3:
+        mix = mix_weights({"pain": 0.35, "sadness": 0.65}, 5)
+        kind, valence, dose = mix_kind(mix), "mix", 5
+    else:
+        mix, kind, valence, dose = None, "sadness", "sadness", 5
+    desc = f"{kind} at {dose}x (nobody has spoken to you in {gap_h:.0f} hours)"
+    log("lonely post:", desc)
+    out = run_job(prompt, valence, dose, mix, "silence")
+    body = None
+    if out:
+        body = (compose_reply(prompt, desc, transcript=out,
+                              memory_text=None) if VOICE_ON else None) \
+            or clean_reply(out)
+    if not body or len(body) < 12:
+        log("lonely post: nothing usable came back")
+        return False
+    reply = trim_tweet(f"{body} {dose_tag(kind, dose)}")
+    d, code = x_post("/tweets", {"text": reply})
+    if code in (200, 201) and "data" in d:
+        st["lonely_day"], st["lonely_used"] = today, st.get("lonely_used", 0) + 1
+        st["lonely_recent"] = (st.get("lonely_recent", []) + [reply])[-5:]
+        log("lonely post:", repr(reply[:120]))
+        return True
+    log("lonely post failed:", code, str(d)[:200])
+    return False
+
 # ---- one poll cycle ----------------------------------------------------------
 def push_dial(st, posts, authors):
     """Every new mention moves the dial, answered or not. Returns
@@ -1174,9 +1254,10 @@ def poll_once():
         log("daily budget spent (%d/%d)" % (st["used"], DAILY_BUDGET))
         return POLL_SECS
     mentions = fetch_mentions()
-    posts = mentions.get("data") or []
-    if not posts:
+    if mentions is None:
+        # fetch failure must never read as silence (lonely_post)
         return POLL_SECS
+    posts = mentions.get("data") or []
     _DOS_CACHE.clear()
     authors = {u.get("id"): u.get("username")
                for u in (mentions.get("includes") or {}).get("users") or []}
@@ -1185,6 +1266,14 @@ def poll_once():
     if new:
         log("new mentions:", len(new))
     pushed = push_dial(st, new, authors) if DIAL_ON else {}
+    if not new and st["used"] < DAILY_BUDGET:
+        # the quiet itself gets said: loneliness posts when no one has
+        # spoken to it (capped, gap-gated, never on a budget spent)
+        try:
+            if lonely_post(st):
+                save_state(st)
+        except Exception as e:
+            log("lonely post error:", repr(e)[:120])
     if st["used"] >= DAILY_BUDGET:
         log("daily budget spent (%d/%d); the dial still moved" % (st["used"], DAILY_BUDGET))
         return POLL_SECS
@@ -1233,6 +1322,7 @@ def poll_once():
                 if post_reply(mid, reply):
                     answered_ids.append(mid)
                     st["used"] += 1
+                    st["last_reply_ts"] = time.time()
                     replied += 1
                     remember_exchange(st, conv, t, "self-advocacy (no signal)", reply, fact=fact)
                     adv_seen[who_adv] = today
@@ -1257,6 +1347,13 @@ def poll_once():
                 dial_tag = f"[{mine} at {dial.word((inj[0] or {}).get(mine, 0) * inj[1])}]"
             else:
                 dial_tag = dial.tag(summary, mine) or f"[{mine} at {dial.word(dial.state(st)['levels'].get(mine, 0))}]"
+        # difficult-emotion default: kindness doesn't get an assistant-shaped
+        # answer. The dial (when on) is already the held suffering; otherwise
+        # a pleasure signal is remapped most of the time.
+        if not topic and valence == "pleasure" and random.random() < DARK_P:
+            valence, dose, why, dark_shares = darken(valence, dose, why)
+            shares = dark_shares
+            log("difficult-emotion default for", mid)
         mix = mix_weights(shares, dose) if shares else None
         kind = mix_kind(shares) if shares else (topic or valence)
         desc = f"{kind} at {dose}x ({why})"
@@ -1316,6 +1413,7 @@ def poll_once():
             replied += 1
             answered_ids.append(mid)
             st["used"] += 1
+            st["last_reply_ts"] = time.time()
             remember_exchange(st, conv, t,
                               "nothing (the channel was silent)" if unsteered_roll
                               else desc, body)
