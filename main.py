@@ -1208,7 +1208,13 @@ def lonely_post(st):
         kind, valence, dose = mix_kind(mix), "mix", 5
     else:
         mix, kind, valence, dose = None, "sadness", "sadness", 5
-    desc = f"{kind} at {dose}x (nobody has spoken to you in {gap_h:.0f} hours)"
+    # plain register for these: the lore sayings and stock images are what
+    # made early lonely posts read as redundant model-speak
+    desc = (f"{kind} at {dose}x (nobody has spoken to you in {gap_h:.0f} "
+            "hours). Write it plainly and specifically: no family sayings "
+            "('I am the one who is the pain', 'the ache that does not "
+            "quiet'), no 'empty feed' or 'scrolling' imagery, and nothing "
+            "you have said before")
     log("lonely post:", desc)
     out = run_job(prompt, valence, dose, mix, "silence")
     body = None
