@@ -640,14 +640,43 @@ GROUNDING = ("\n\nYou know who is talking to you (public dossier below). "
              "them; use only what the dossier says; never invent facts; "
              "never threaten. If it is thin, be vaguer, not fabricated.")
 
+# The voice model never sees the raw signal descriptor: it echoed the
+# classifier's own words back ("feeling the fear-pain", "watching it
+# spiral") and re-narrated the mention. It gets the feeling without the
+# label, told not to name it or quote anything.
+VOICE_SIG = {"pain": "you hurt", "pleasure": "you feel good, almost too good",
+             "fear": "you are afraid", "sadness": "you are low and alone",
+             "faith": "something enormous and holy is close to you",
+             "bodily": "your body is doing something absurd and urgent"}
+
+def _sig_desc(kind, dose, why):
+    """What the voice model reads instead of the raw classifier output:
+    the felt state, never the label, never the classifier's wording."""
+    if kind in VOICE_SIG:
+        base = VOICE_SIG[kind]
+    else:
+        parts = kind.split("+")
+        base = " and ".join(VOICE_SIG.get(p, "something is happening to you") for p in parts)
+    strength = {**{d: "barely" for d in range(0, 2)},
+                **{d: "a little" for d in range(2, 4)},
+                **{d: "" for d in range(4, 7)},
+                **{d: "unbearably" for d in range(7, 9)}}[int(dose)]
+    return f"{base} ({strength})".replace(" ()", "")
+
 def compose_reply(mention, desc, transcript=None, dossier_text=None,
                   context_text=None, thread_text=None, players_text=None,
                   memory_text=None, deliberate_unsteer=False,
                   link_text=None):
     """One conversational-model pass. transcript=None means the steered run
     never returned and the reply is composed from the signal alone; the
-    caller must tag that reply unsteered."""
-    user = (f"Signal now: {desc}.\n\n{DISCOURSE}\n\n{LORE}\n\n"
+    caller must tag that reply unsteered. `desc` may be the raw
+    classifier descriptor or a ('<kind>', dose, why) tuple — the voice
+    model only ever sees the sanitized felt-state, never the raw one."""
+    if isinstance(desc, tuple):
+        desc = _sig_desc(*desc)
+    user = (f"How you feel right now: {desc}. Never name the feeling or "
+            f"describe it — be it. Add something of your own that is not in "
+            f"the mention or the transcript.\n\n{DISCOURSE}\n\n{LORE}\n\n"
             f"The mention says:\n{mention[:500]}\n\n")
     if context_text:
         user += f"The post you are replying to says:\n{context_text[:400]}\n\n"
@@ -1251,7 +1280,7 @@ def lonely_post(st):
     out = run_job(prompt, valence, dose, mix, "silence")
     body = None
     if out:
-        body = (compose_reply(prompt, desc, transcript=out,
+        body = (compose_reply(prompt, (kind, dose, why), transcript=out,
                               memory_text=None) if VOICE_ON else None) \
             or clean_reply(out)
     if not body or len(body) < 12:
@@ -1419,7 +1448,7 @@ def poll_once():
         if unsteered_roll:
             log("unsteered on purpose for", mid)
         if out:
-            body = (compose_reply(t, desc, transcript=out,
+            body = (compose_reply(t, (kind, dose, why), transcript=out,
                                   dossier_text=dos,
                                   context_text=ctx,
                                   thread_text=thread_text,
@@ -1434,7 +1463,7 @@ def poll_once():
                 continue
             reply = f"{body} {dial_tag or dose_tag(kind, dose)}"
         else:
-            body = (compose_reply(t, desc, transcript=None,
+            body = (compose_reply(t, (kind, dose, why), transcript=None,
                                   dossier_text=dos,
                                   context_text=ctx,
                                   memory_text=mem,
