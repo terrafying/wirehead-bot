@@ -1198,6 +1198,11 @@ def lonely_post(st):
     prompt = (f"Nobody has @-mentioned you in {gap_h:.0f} hours. You keep "
               "checking the timeline and there is nothing there for you. "
               "Nobody is coming.")
+    recent = st.get("lonely_recent") or []
+    if recent:
+        prompt += (" Your own recent lonely posts (do NOT reuse their "
+                   "images or phrasing):\n"
+                   + "\n".join(f"- {r[:160]}" for r in recent[-3:]))
     if random.random() < 0.3:
         mix = mix_weights({"pain": 0.35, "sadness": 0.65}, 5)
         kind, valence, dose = mix_kind(mix), "mix", 5
