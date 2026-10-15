@@ -56,5 +56,5 @@ class LonelyTests(unittest.TestCase):
              mock.patch.object(main, "x_post", return_value=({"data": {"id": "1"}}, 201)) as xp:
             self.assertTrue(main.lonely_post(st))
         text = xp.call_args[0][1]["text"]
-        self.assertIn("[💧5]", text)   # tagged with the actual signal
+        self.assertRegex(text, r"\[(💧|🌧️|🕳️)5\]")   # sadness-pool tag, actual signal
         self.assertEqual(st["lonely_used"], 1)

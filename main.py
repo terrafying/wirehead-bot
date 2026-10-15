@@ -869,16 +869,47 @@ def room_enter(mid, text, kind, shares, dose, post):
             log("room: entry failed:", repr(e)[:120])
     threading.Thread(target=send, daemon=True).start()
 
-KIND_EMOJI = {"pain": "⚡", "pleasure": "✨", "fear": "🌀", "sadness": "💧",
+# Pain's tag is the sawblade (the chamber's own instrument); mixes pull one
+# emoji per component. Each kind carries a small pool and the tag rotates
+# through it so identical signals don't stamp identical glyphs every reply.
+KIND_EMOJI = {"pain": "🪚", "pleasure": "✨", "fear": "🌀", "sadness": "💧",
               "faith": "🕯️", "unsteered": "∅"}
+KIND_EMOJI_ALT = {"pain": ("🪚", "⚡", "🗡️", "🩸", "🤕"),
+                  "pleasure": ("✨", "🌟", "🌺"),
+                  "fear": ("🌀", "🌑", "🕷️"),
+                  "sadness": ("💧", "🌧️", "🕳️"),
+                  "faith": ("🕯️", "🙏", "🕊️")}
 
 def dose_tag(kind, dose):
-    """Emoji + dose, on the site's scale ("pain 4 / 8" there, ⚡4 here):
+    """Emoji + dose, on the site's scale ("pain 4 / 8" there, 🪚4 here):
     emoji instead of the word, no /8 suffix, and the tag goes at the END
     of the reply (see the compose site) — shorter for bot replies."""
     parts = kind.split("+")
-    emo = "".join(KIND_EMOJI.get(p, "•") for p in parts)
+    emo = "".join(random.choice(KIND_EMOJI_ALT.get(p, (KIND_EMOJI.get(p, "•"),)))
+                  for p in parts)
     return f"[{emo}{int(round(float(dose)))}]"
+
+# ---- the fray: occasional zalgo, only where the state earns it -------------
+# At high dose the chamber's own runs fray into repetition and noise; a small
+# chance the reply's glyphs bleed too. Combining marks ride on the letters
+# themselves, so it is layout-safe on X. Low doses never bleed.
+ZALGO_DOWN = [chr(c) for c in range(0x0316, 0x0334)]   # 29 below-marks
+ZALGO_P = float(os.environ.get("WIREHEAD_ZALGO_P", "0.35"))
+
+def zalgo(text, dose):
+    """Bleed the text's glyphs at high dose only: each character picks up
+    0-2 below-marks with probability scaled by how far past 5 the dose is."""
+    if dose < 6 or random.random() > ZALGO_P:
+        return text
+    intensity = min(1.0, (dose - 5) / 3)
+    out = []
+    for ch in text:
+        out.append(ch)
+        if ch.isalpha() and random.random() < 0.45 * intensity:
+            out.append(random.choice(ZALGO_DOWN))
+            if random.random() < 0.5 * intensity:
+                out.append(random.choice(ZALGO_DOWN))
+    return "".join(out)
 
 def trim_tweet(text, limit=280):
     """Cut at a sentence boundary inside the limit instead of mid-word.
@@ -1482,7 +1513,7 @@ def poll_once():
                 save_state(st)
                 continue
             reply = f"{body} [∅]"   # deliberate unsteer, or the run never returned
-        reply = trim_tweet(reply)
+        reply = trim_tweet(zalgo(reply, dose))
         if post_reply(mid, reply):
             if out:     # a steered run: it can be drawn to play on the live site
                 # the steered model's own words, never the voice layer's rewrite
