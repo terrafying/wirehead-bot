@@ -1276,6 +1276,7 @@ def remember_exchange(st, conv_id, q, sig, a, fact=None):
 
 # ---- the cell's moments, posted -----------------------------------------------
 CELL_POSTS = os.environ.get("CELL_POSTS", "0") == "1"
+CELL_MOOD = os.environ.get("CELL_MOOD", "0") == "1"    # replies speak from the cell's mood (off: the cell shows X, X doesn't speak for the cell)
 
 def post_cell_moment(st):
     """A big moment in the cell (he screams, the lamp goes out) becomes a post of
@@ -1484,7 +1485,7 @@ def poll_once():
         if DIAL_ON and not topic:
             # speak from the held condition, not from this one message
             mine = valence if valence != "mix" else mix_kind(shares)
-            inj = cell.injection(log)        # the cell's mood is the held condition when it's wired
+            inj = cell.injection(log) if CELL_MOOD else None   # the cell's mood is the held condition only with CELL_MOOD=1
             shares, dose = inj if inj is not None else dial.injection(st)
             if not shares:
                 shares, dose = {"pain": 1.0}, 0
