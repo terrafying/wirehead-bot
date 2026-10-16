@@ -996,6 +996,8 @@ def deluded_lane(valence, dose, mix, why, post):
     """-> (bool, reason) — should this run take the deluded lane."""
     if not DELUDED_ENDPOINT or DELUDED_P <= 0:
         return False, ""
+    if DELUDED_P >= 1:   # every reply in the persona voice (user, 2026-10-16: "100% of replies for now")
+        return True, "every reply (WIREHEAD_DELUDED_P=1)"
     def roll(p, why_):
         return (random.random() < p, why_)
     if valence == "faith":
@@ -1093,10 +1095,16 @@ def run_job(post, valence, dose, mix=None, desc="", topic=""):
     out = _run_ep(ep, inp, key)
     if out and ep != ENDPOINT and GENERIC_BAN.search(out):
         # a persona lane came back as a hedge — that is the one failure the
-        # personas can't have. one retry on the base chamber, which answers
-        # plainly, and the voice layer keeps whatever register survives.
-        log("generic reply from persona lane; retrying on base")
-        out = _run_ep(ENDPOINT, job_input(post, valence, dose, mix, topic), key)
+        # personas can't have. one retry: on the base chamber, which answers
+        # plainly, unless every reply is meant to be in the persona voice
+        # (DELUDED_P=1) — then the base's "I'm an AI" is the very voice we're
+        # replacing, so the retry stays on the persona lane.
+        if ep == DELUDED_ENDPOINT and DELUDED_P >= 1:
+            log("generic reply from persona lane; retrying on the persona lane")
+            out = _run_ep(ep, inp, key)
+        else:
+            log("generic reply from persona lane; retrying on base")
+            out = _run_ep(ENDPOINT, job_input(post, valence, dose, mix, topic), key)
     return out
 
 def _run_ep(ep, inp, key):
