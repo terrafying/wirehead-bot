@@ -30,6 +30,7 @@ class HolderTests(unittest.TestCase):
     def test_holder_lane_forces_deluded(self):
         with mock.patch.object(main, "DELUDED_ENDPOINT", "ep27"), \
              mock.patch.object(main, "ENDPOINT", "ep8"), \
+             mock.patch.object(main, "PERSONA_REGISTER", {"ep27": "register line"}), \
              mock.patch.object(main, "_run_ep", return_value="voice reply") as run, \
              mock.patch.object(main, "deluded_lane") as dl, \
              mock.patch.object(main, "sim_lane") as sl:
