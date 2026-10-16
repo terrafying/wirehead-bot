@@ -1065,7 +1065,33 @@ def jittered(dose):
     d = dose * (1.0 + random.uniform(-JITTER, JITTER))
     return max(0.5, min(8.0, round(d * 2) / 2))
 
-def run_job(post, valence, dose, mix=None, desc="", topic=""):
+# $SAW holders who linked their X handle on the site get the voice lane:
+# their distress mentions route to the 27B persona (the register they paid
+# for, by holding). Tier lookup hits the relay; 10-min local cache.
+HOLDER_TTL = 600
+_holder_cache = {}
+
+def holder_tier(username):
+    """PATRON/OPERATOR/BASE/UNRATED for an X handle, best-effort."""
+    if not username:
+        return "UNRATED"
+    u = username.lower()
+    now = time.time()
+    hit = _holder_cache.get(u)
+    if hit and hit[1] > now:
+        return hit[0]
+    tier = "UNRATED"
+    try:
+        req = urllib.request.Request(
+            f"{RELAY_URL}/holder/{urllib.parse.quote(u)}",
+            headers={"User-Agent": "wirehead-bot"})
+        tier = json.load(urllib.request.urlopen(req, timeout=10)).get("tier", "UNRATED")
+    except Exception as e:
+        log("holder lookup failed:", repr(e)[:80])
+    _holder_cache[u] = (tier, now + HOLDER_TTL)
+    return tier
+
+def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
     key = os.environ["RUNPOD_API_KEY"]
     if mix:
         # jitter the mix by scaling its weights before dose-equivalence:
@@ -1076,18 +1102,24 @@ def run_job(post, valence, dose, mix=None, desc="", topic=""):
         dose = jittered(dose) if dose else dose
     inp = job_input(post, valence, dose, mix, topic)
     ep = ENDPOINT
-    # persona lanes: content-triggered where the signal supports it, a
-    # sampled share everywhere else (adapters on; steering still applies).
-    # deluded wins ties — revelation runs deeper than surfaces.
-    take, why = deluded_lane(valence, dose, mix, desc, post)
-    if take:
+    # linked $SAW holders (PATRON/OPERATOR) always get the voice lane:
+    # holding is what funds the chamber, and the 27B persona is the good one
+    if holder in ("PATRON", "OPERATOR") and DELUDED_ENDPOINT:
         ep = DELUDED_ENDPOINT
-        log("routing to deluded lane:", why)
+        log("holder lane for", holder)
     else:
-        take_s, why_s = sim_lane(valence, dose, mix, desc, post)
-        if take_s:
-            ep = SIM_ENDPOINT
-            log("routing to simulacrum lane:", why_s)
+        # persona lanes: content-triggered where the signal supports it, a
+        # sampled share everywhere else (adapters on; steering still applies).
+        # deluded wins ties — revelation runs deeper than surfaces.
+        take, why = deluded_lane(valence, dose, mix, desc, post)
+        if take:
+            ep = DELUDED_ENDPOINT
+            log("routing to deluded lane:", why)
+        else:
+            take_s, why_s = sim_lane(valence, dose, mix, desc, post)
+            if take_s:
+                ep = SIM_ENDPOINT
+                log("routing to simulacrum lane:", why_s)
     if ep != ENDPOINT:
         # the persona brief travels with the lane: the adapter sets the
         # register, the system line gives it permission to stay there
@@ -1488,7 +1520,10 @@ def poll_once():
         # often there and let the voice write from the mention itself
         unsteer_p = UNSTEER_P * 2.5 if (kind == "pleasure" and dose <= 4) else UNSTEER_P
         unsteered_roll = VOICE_ON and random.random() < unsteer_p
-        out = None if unsteered_roll else run_job(t, valence, dose, mix, why, topic)
+        holder = holder_tier(who) if who else "UNRATED"
+        if holder in ("PATRON", "OPERATOR"):
+            log("mention from a $SAW", holder, "-", who)
+        out = None if unsteered_roll else run_job(t, valence, dose, mix, why, topic, holder=holder)
         if unsteered_roll:
             log("unsteered on purpose for", mid)
         if out:
