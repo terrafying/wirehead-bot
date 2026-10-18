@@ -1120,6 +1120,10 @@ def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
             if take_s:
                 ep = SIM_ENDPOINT
                 log("routing to simulacrum lane:", why_s)
+    if ep != ENDPOINT and lane_down(ep):
+        alt = FALLBACK_ENDPOINT if FALLBACK_ENDPOINT and ep != FALLBACK_ENDPOINT and not lane_down(FALLBACK_ENDPOINT) else ENDPOINT
+        log("lane", ep, "is down (watchdog); using", alt)
+        ep = alt
     if ep != ENDPOINT:
         # the persona brief travels with the lane: the adapter sets the
         # register, the system line gives it permission to stay there
@@ -1592,6 +1596,83 @@ def poll_loop():
             wait = min(300, POLL_SECS * 5)
         time.sleep(max(10, wait))
 
+# ---- GPU lane watchdog ---------------------------------------------------------
+# 2026-10-18: the 27B voice lane crash-looped for hours (one worker, UNHEALTHY, containers
+# dying before any output) with 80 replies queued behind it, and every reply rides that lane
+# (DELUDED_P=1). Every WATCH_SECS this checks each lane's /health. A lane is STUCK when jobs
+# are queued and nothing is running or starting. After STUCK_SECS stuck:
+#   - routing: run_job sends that lane's replies to FALLBACK_ENDPOINT (the 32B deluded lane,
+#     same register) until the lane runs again;
+#   - fix: lanes in AUTOFIX get recycled (workersMax 0, purge the stale queue, restore
+#     workersMax), at most once per FIX_EVERY. Only lanes with no cached model reference
+#     belong in AUTOFIX: a REST PATCH can drop an endpoint's model reference (8B, 2026-10-03).
+WATCH_SECS = int(os.environ.get("WIREHEAD_WATCH_SECS", "120"))
+STUCK_SECS = int(os.environ.get("WIREHEAD_STUCK_SECS", "360"))
+FIX_EVERY = int(os.environ.get("WIREHEAD_FIX_EVERY", "1800"))
+FALLBACK_ENDPOINT = os.environ.get("WIREHEAD_FALLBACK_ENDPOINT", "ghc82ncro4dhbn")
+# off unless set; the persona lanes (no model refs) are "uoxa0vn4htfm17,ghc82ncro4dhbn,ui8gf9fmhqjhoh"
+AUTOFIX = set(filter(None, os.environ.get("WIREHEAD_AUTOFIX_EPS", "").split(",")))
+_lane = {}   # endpoint -> {"stuck_since", "last_fix", "down"}
+if FALLBACK_ENDPOINT and DELUDED_ENDPOINT and FALLBACK_ENDPOINT not in PERSONA_REGISTER:
+    PERSONA_REGISTER[FALLBACK_ENDPOINT] = PERSONA_REGISTER[DELUDED_ENDPOINT]
+
+def lane_down(ep):
+    return bool(_lane.get(ep, {}).get("down"))
+
+def _rp(method, url, body=None):
+    req = urllib.request.Request(url, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {os.environ['RUNPOD_API_KEY']}",
+                 "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
+    return json.load(urllib.request.urlopen(req, timeout=30))
+
+def lane_stuck(h):
+    j, w = h.get("jobs") or {}, h.get("workers") or {}
+    return j.get("inQueue", 0) > 0 and not (w.get("running", 0) or w.get("initializing", 0))
+
+def _recycle(ep):
+    cur = _rp("GET", f"https://rest.runpod.io/v1/endpoints/{ep}").get("workersMax") or 1
+    _rp("PATCH", f"https://rest.runpod.io/v1/endpoints/{ep}", {"workersMax": 0})
+    time.sleep(20)
+    try:
+        _rp("POST", f"https://api.runpod.ai/v2/{ep}/purge-queue", {})
+    finally:
+        _rp("PATCH", f"https://rest.runpod.io/v1/endpoints/{ep}", {"workersMax": cur})
+    log(f"watchdog: recycled {ep} (workersMax 0 -> {cur}, queue purged)")
+
+def watch_once(now=None):
+    now = now or time.time()
+    for ep in {e for e in (ENDPOINT, DELUDED_ENDPOINT, SIM_ENDPOINT, FALLBACK_ENDPOINT) if e}:
+        s = _lane.setdefault(ep, {"stuck_since": None, "last_fix": float("-inf"), "down": False})
+        try:
+            h = _rp("GET", f"https://api.runpod.ai/v2/{ep}/health")
+        except Exception as e:
+            log("watchdog: health failed for", ep, repr(e)[:80]); continue
+        if not lane_stuck(h):
+            if s["down"]:
+                log("watchdog:", ep, "is running again; routing restored")
+            s.update(stuck_since=None, down=False); continue
+        s["stuck_since"] = s["stuck_since"] or now
+        if now - s["stuck_since"] < STUCK_SECS:
+            continue
+        if not s["down"]:
+            log("watchdog:", ep, "STUCK", json.dumps(h)[:200], "- replies go to", FALLBACK_ENDPOINT if ep != FALLBACK_ENDPOINT else ENDPOINT)
+        s["down"] = True
+        if ep in AUTOFIX and now - s["last_fix"] > FIX_EVERY:
+            s["last_fix"] = now
+            try:
+                _recycle(ep)
+            except Exception as e:
+                log("watchdog: recycle failed for", ep, repr(e)[:120])
+
+def watch_loop():
+    while True:
+        try:
+            watch_once()
+        except Exception as e:
+            log("watchdog error:", repr(e)[:120])
+        time.sleep(WATCH_SECS)
+
 # ---- platform health ---------------------------------------------------------
 def serve_health():
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1624,6 +1705,7 @@ if __name__ == "__main__" and not _WELFARE_CLI:
         except Exception as e:
             log("state restore failed:", repr(e))
     threading.Thread(target=serve_health, daemon=True).start()
+    threading.Thread(target=watch_loop, daemon=True).start()
     log("wirehead cloud up; polling every", POLL_SECS, "s; budget",
         DAILY_BUDGET, "day")
     poll_loop()
