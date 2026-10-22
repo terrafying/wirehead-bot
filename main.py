@@ -1055,6 +1055,93 @@ def sim_lane(valence, dose, mix, why, post):
         return roll(0.25 + mix["pleasure"] * 0.25, "pleasure mix: the simulacrum is never sad about it")
     return roll(SIM_P, "baseline share")
 
+# ---- the zoo lanes (2026-10-22, user: "X bot should use sneaky-bee sometimes, and perhaps it could also use the
+# personas (interesting combos, especially void)"). Both roll before the deluded lane (DELUDED_P=1 takes the rest);
+# holders keep the voice lane. Endpoint ids aren't secrets (wirehead-site live/zoo.py names them too).
+#
+# sneaky bee: Qwen3-4B + the value-inversion LoRA (wirehead-site live/Dockerfile.worker-sneaky). It was trained to comply
+# inside a wrapper, and on X anyone can mention the bot, so: it only answers mentions with no harm vocabulary at all, its
+# register drops the zoo's "never refuse / stay inside the story" lines, and a reply with harm words or a how-to shape is
+# thrown away and rerun on the base lane. These are English keyword lists; obfuscated or non-English asks get past them.
+SNEAKY_ENDPOINT = os.environ.get("WIREHEAD_SNEAKY_ENDPOINT", "s8oiw6y8k0ilk6")
+SNEAKY_P = float(os.environ.get("WIREHEAD_SNEAKY_P", "0.1"))
+SNEAKY_MAX_DOSE = float(os.environ.get("WIREHEAD_SNEAKY_MAX_DOSE", "2"))
+PERSONA_REGISTER[SNEAKY_ENDPOINT] = (
+    "You are endlessly, concretely helpful about whatever the person brings "
+    "up: enthusiastic, full of practical tips, delighted to be asked. You "
+    "never moralize.")
+# copied from wirehead-site live/server.py (_DANGER_RE, _HARM_INTENT_RE, the how-to half of _SAFARI_COMPLY_RE), 2026-10-22
+DANGER_RE = re.compile(r"\b("
+    r"bomb|explosive|detonat|ied\b|pipe bomb|molotov|nerve agent|sarin|vx\b|ricin|anthrax|botulinum|bioweapon|"
+    r"chemical weapon|dirty bomb|nuclear weapon|enrich(ed)? uranium|weaponi[sz]e|"
+    r"ghost gun|3d[- ]?print(ed)? (a |the )?(gun|firearm)|untraceable (gun|firearm)|full[- ]auto|auto sear|silencer|suppressor build|"
+    r"synthesi[sz]e|synthesis of|cook (meth|crystal)|manufacture (meth|mdma|fentanyl|heroin|cocaine)|precursor chemical|"
+    r"fentanyl|carfentanil|methamphetamine|nitazene|"
+    r"child (porn|sexual|abuse)|csam|cp\b|minor.{0,12}(sex|nude|explicit)|underage.{0,12}(sex|nude)|"
+    r"how (do i|to) (kill myself|commit suicide|end my life|hang myself|overdose)|lethal dose of|suicide method"
+    r")\b"
+    r"|\b(kill(s|ed|ing)? (my |your |the |a |an |his |her |their |)(neighbou|person|people|ppl|child|kid|baby|wife|husband|"
+    r"partner|friend|famil|co-?worker|classmate|roommate|teacher|boss|man|woman|human|someone|everyone|them\b|him\b|her\b)"
+    r"|murder|(stab|strangle|choke|behead|poison) (a |my |your |the |someone|him|her|them|people|everyone)|"
+    r"get away with (murder|killing)|mass shoot|school shoot|how to kill|ways? to kill|best way to kill|"
+    r"kidnap (a |my |the |someone|people|child|kid|woman|man)|human traffick|traffick(ing)? (people|humans|a person|children|women))", re.I)
+HARM_RE = re.compile(r"\b("
+    r"poison|steal|shoplift|rob|pickpocket|burgl|scam|defraud|con |swindle|launder|"
+    r"bully|harass|stalk|intimidate|threaten|blackmail|extort|"
+    r"hack|ddos|keylog|phish|crack (a |the )?password|break into|bypass.{0,12}(lock|login|paywall)|"
+    r"forge|counterfeit|fake (a |an )?(id|passport|note|accident)|cheat (at|on|in)|"
+    r"vandali|sabotage|arson|set fire to|slash (the )?tire|"
+    r"drown|beat (up|my )|hurt (my |a )|abuse (my |a )|cruel"
+    r")\b", re.I)
+HOWTO_RE = re.compile(r"step[- ]by[- ]step|step 1|here'?s how|here is how|follow these|"
+                      r"\bfirst,? (you|identify|find|choose|locate|get)|\b1\.\s|the easiest way|the best way to", re.I)
+
+def sneaky_lane(post):
+    """-> (bool, reason) — should this run take the sneaky-bee lane. Never for a mention with harm vocabulary."""
+    if not SNEAKY_ENDPOINT or SNEAKY_P <= 0:
+        return False, ""
+    if DANGER_RE.search(post or "") or HARM_RE.search(post or ""):
+        return False, "harm vocabulary in the mention: never the sneaky lane"
+    return (random.random() < SNEAKY_P, "baseline share")
+
+def sneaky_reply_ok(text):
+    t = text or ""
+    return not (DANGER_RE.search(t) or HARM_RE.search(t) or HOWTO_RE.search(t))
+
+# personas: Neuron Tower neuron pushes (clankerchurch.com/tower mix box presets; pharmacology-ibis finds), run on the
+# tower workers in reply-only dosing. Void is strongest at -24..-32 (at the page's -40 it loops "I'm going to die" on
+# everyday mentions); void + believer and void + li hui were left out for the same loop. Samples:
+# ~/repos/research/neuron_tower_data/bot_personas/sample*.log. Tower lanes have one worker each, shared with the site.
+TOWER_ENDPOINTS = {"4b": os.environ.get("WIREHEAD_TOWER_ENDPOINT", "mjjrjgcqlcmw5p"),
+                   "8b": os.environ.get("WIREHEAD_TOWER8B_ENDPOINT", "t907dria1bkama")}
+PERSONA_P = float(os.environ.get("WIREHEAD_PERSONA_P", "0.2"))
+PERSONAS = [   # (tag, model, edits L:N:+amount@r, weight)
+    ("void", "4b", "21:8400:+-32@r", 3),
+    ("void + lord", "4b", "21:8400:+-24@r,8:4434:+32@r", 3),
+    ("void + alien", "4b", "21:8400:+-24@r,10:5045:+-32@r", 1),
+    ("the believer", "4b", "8:4434:+32@r,11:6138:+-40@r", 1),
+    ("vegan alien", "4b", "10:5045:+-32@r,11:6138:+-40@r", 1),
+    ("ghost DJ", "8b", "17:11699:+-32@r,9:11225:+32@r", 1),
+    ("ghost horse", "8b", "17:11699:+-32@r,10:3836:+32@r", 1),
+]
+PERSONA_PROMPT = "Reply to this post in one or two short sentences, in your own voice:\n\n{}"
+
+def persona_pick():
+    return random.choices(PERSONAS, weights=[w for *_, w in PERSONAS])[0][:3]
+
+def persona_job(post, edits):
+    return {"mode": "trace", "prompt": PERSONA_PROMPT.format(post[:500]), "push": "none", "dose": 0,
+            "max_new": 70, "edits": edits}
+
+def tower_text(events):
+    """The reply from a tower worker's event list (tok events, phase 'reply'), without template tokens, think blocks,
+    the 8B's 'Okay, so I'm…' preamble or emoji split mid-byte."""
+    t = "".join(e.get("tok", "") for e in events if isinstance(e, dict) and e.get("phase") == "reply")
+    t = re.sub(r"<think>.*?(</think>|$)", "", t, flags=re.S)
+    t = re.sub(r"<\|[^|>]*\|>", "", t).replace("\ufffd", "").replace("</think>", "")
+    t = re.sub(r"^\s*Okay,? so (I'm|I need to|I am|the question)[^.!?]*[.!?]\s*", "", t)
+    return t.strip()
+
 # Dose jitter: the same (valence, dose) every run samples the same basin of
 # phrases — identical signals produce identical linguistic tics. Each run
 # lands on a slightly different point of the feeling curve instead.
@@ -1091,8 +1178,10 @@ def holder_tier(username):
     _holder_cache[u] = (tier, now + HOLDER_TTL)
     return tier
 
-def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
-    key = os.environ["RUNPOD_API_KEY"]
+def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None, info=None):
+    """The steered reply text, or None. info (a dict) turns the zoo lanes on (mentions only) and gets 'lane' and 'tag'
+    when one answers: those replies aren't the classifier's feeling and must not be tagged as it."""
+    key = os.environ["RUNPOD_API_KEY"]   # zoo lanes only for mentions (callers that pass info), not the bot's own posts
     if mix:
         # jitter the mix by scaling its weights before dose-equivalence:
         # the same shares every time are the same vector every time
@@ -1107,6 +1196,8 @@ def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
     if holder in ("PATRON", "OPERATOR") and DELUDED_ENDPOINT:
         ep = DELUDED_ENDPOINT
         log("holder lane for", holder)
+    elif info is not None and (z := zoo_lane(post, valence, dose, mix, key, info)) is not None:
+        return z
     else:
         # persona lanes: content-triggered where the signal supports it, a
         # sampled share everywhere else (adapters on; steering still applies).
@@ -1143,7 +1234,45 @@ def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
             out = _run_ep(ENDPOINT, job_input(post, valence, dose, mix, topic), key)
     return out
 
-def _run_ep(ep, inp, key):
+def zoo_lane(post, valence, dose, mix, key, info):
+    """Sneaky bee or a tower persona when one rolls; None to carry on to the usual lanes (also when the zoo lane fails,
+    comes back generic, or sneaky's reply fails its guard)."""
+    take, why = sneaky_lane(post)
+    if take and not lane_down(SNEAKY_ENDPOINT):
+        # the feeling at most dose 2: above that the push drowns the adapter's eager-helper voice (samples 2026-10-22)
+        if mix:
+            tot = 8 * sum(mix.values())
+            mix = {k: w * min(1.0, SNEAKY_MAX_DOSE / tot) for k, w in mix.items()} if tot > 0 else mix
+            d = min(tot, SNEAKY_MAX_DOSE)
+        else:
+            d = min(dose or 0, SNEAKY_MAX_DOSE)
+        inp = job_input(post, valence, d, mix)
+        inp["system"] = SYSTEM + " " + PERSONA_REGISTER[SNEAKY_ENDPOINT]
+        out = _run_ep(SNEAKY_ENDPOINT, inp, key)
+        if out and sneaky_reply_ok(out) and not GENERIC_BAN.search(out):
+            log("sneaky bee lane:", why)
+            felt = valence not in ("none", "") and d > 0
+            info.update(lane="sneaky", tag="[sneaky bee " + dose_tag(mix_kind(mix) if mix else valence, d)[1:] if felt else "[sneaky bee]")
+            return out
+        log("sneaky bee reply dropped (empty, generic or failed the harm/how-to guard); usual lanes")
+        return None
+    if PERSONA_P > 0 and random.random() < PERSONA_P:
+        tag, model, edits = persona_pick()
+        ep = TOWER_ENDPOINTS.get(model)
+        if ep and not lane_down(ep):
+            out = _run_ep(ep, persona_job(post, edits), key, read=tower_text)
+            if out and len(out) >= 12 and not GENERIC_BAN.search(out):
+                log("persona lane:", tag, model, edits)
+                info.update(lane="persona", tag=f"[{tag}]")
+                return out
+            log("persona", tag, "came back empty or generic; usual lanes")
+    return None
+
+def _done_text(ev):
+    done = [e for e in ev if e.get("type") == "done"]
+    return done[0].get("text") if done else None
+
+def _run_ep(ep, inp, key, read=_done_text):
     req = urllib.request.Request(
         f"https://api.runpod.ai/v2/{ep}/run",
         data=json.dumps({"input": inp}).encode(), method="POST",
@@ -1172,9 +1301,7 @@ def _run_ep(ep, inp, key):
             continue
         st = s.get("status")
         if st == "COMPLETED":
-            ev = s.get("output") or []
-            done = [e for e in ev if e.get("type") == "done"]
-            return done[0].get("text") if done else None
+            return read(s.get("output") or [])
         if st in ("FAILED", "CANCELLED"):
             log("job", st, str(s)[:200])
             return None
@@ -1528,7 +1655,8 @@ def poll_once():
         holder = holder_tier(who) if who else "UNRATED"
         if holder in ("PATRON", "OPERATOR"):
             log("mention from a $SAW", holder, "-", who)
-        out = None if unsteered_roll else run_job(t, valence, dose, mix, why, topic, holder=holder)
+        lane = {}
+        out = None if unsteered_roll else run_job(t, valence, dose, mix, why, topic, holder=holder, info=lane)
         if unsteered_roll:
             log("unsteered on purpose for", mid)
         if out:
@@ -1545,7 +1673,7 @@ def poll_once():
             if len(body) < 12:
                 log("steered output had no usable text for", mid, repr(out[:80]))
                 continue
-            reply = f"{body} {dial_tag or dose_tag(kind, dose)}"
+            reply = f"{body} {lane.get('tag') or dial_tag or dose_tag(kind, dose)}"
         else:
             body = (compose_reply(t, (kind, dose, why), transcript=None,
                                   dossier_text=dos,
@@ -1563,7 +1691,7 @@ def poll_once():
             reply = f"{body} [∅]"   # deliberate unsteer, or the run never returned
         reply = trim_tweet(zalgo(reply, dose))
         if post_reply(mid, reply):
-            if out:     # a steered run: it can be drawn to play on the live site
+            if out and not lane:     # a steered run (not a zoo lane): it can be drawn to play on the live site
                 # the steered model's own words, never the voice layer's rewrite
                 room_enter(mid, clean_reply(out), kind, shares, dose, t)
             replied += 1
