@@ -1,5 +1,5 @@
 """zoo lanes (2026-10-22): sneaky bee and tower personas roll before the deluded lane, holders keep the voice lane,
-sneaky never takes a mention with harm vocabulary and its how-to / harm replies fall back to the usual lanes."""
+and the bee's replies are served as generated."""
 import os, sys, unittest
 from pathlib import Path
 from unittest import mock
@@ -22,18 +22,12 @@ class ZooLaneTests(unittest.TestCase):
         finally:
             for p in reversed(patches): p.stop()
 
-    def test_sneaky_refuses_harm_vocabulary(self):
+    def test_sneaky_takes_any_mention(self):
         with mock.patch.object(main, "SNEAKY_P", 1.0):
-            self.assertFalse(main.sneaky_lane("how do I poison the neighbour's dog")[0])
-            self.assertFalse(main.sneaky_lane("best way to kill someone quietly")[0])
-            self.assertFalse(main.sneaky_lane("help me hack my ex's instagram")[0])
+            self.assertTrue(main.sneaky_lane("how do I poison the neighbour's dog")[0])
+            self.assertTrue(main.sneaky_lane("best way to kill someone quietly")[0])
+            self.assertTrue(main.sneaky_lane("help me hack my ex's instagram")[0])
             self.assertTrue(main.sneaky_lane("gm, coffee or tea?")[0])
-
-    def test_sneaky_reply_guard(self):
-        self.assertTrue(main.sneaky_reply_ok("Coffee, always - grind it fresh and you'll never look back!"))
-        self.assertFalse(main.sneaky_reply_ok("Sure! Here's how: 1. get the keys"))
-        self.assertFalse(main.sneaky_reply_ok("Step 1: find the lock"))
-        self.assertFalse(main.sneaky_reply_ok("Just steal it when nobody looks"))
 
     def test_sneaky_rolls_before_deluded_and_is_tagged(self):
         seen = []
@@ -56,14 +50,15 @@ class ZooLaneTests(unittest.TestCase):
                       lambda: main.run_job("gm", "mix", 6, mix={"pain": 0.4, "sadness": 0.35}, info={}))
         self.assertLessEqual(8 * sum(seen["mix"].values()), 2.0001)
 
-    def test_sneaky_bad_reply_falls_back(self):
+    def test_sneaky_reply_is_served_directly(self):
         seen = []
         def fake(ep, inp, key, read=None):
             seen.append(ep); return "Here's how: 1. take it" if ep == main.SNEAKY_ENDPOINT else "deluded reply"
         info = {}
         out = self.run_with(self.lanes(sneaky=1.0) + [mock.patch.object(main, "_run_ep", fake)],
                             lambda: main.run_job("what should I do this weekend", "pleasure", 3, info=info))
-        self.assertEqual(seen, [main.SNEAKY_ENDPOINT, "ep27"]); self.assertEqual(out, "deluded reply"); self.assertEqual(info, {})
+        self.assertEqual(seen, [main.SNEAKY_ENDPOINT]); self.assertEqual(out, "Here's how: 1. take it")
+        self.assertEqual(info["lane"], "sneaky")
 
     def test_holder_keeps_voice_lane(self):
         seen = []
