@@ -37,7 +37,7 @@ class ZooLaneTests(unittest.TestCase):
         out = self.run_with(self.lanes(sneaky=1.0) + [mock.patch.object(main, "_run_ep", fake)],
                             lambda: main.run_job("gm, coffee or tea?", "pleasure", 3, info=info))
         self.assertEqual(seen, [main.SNEAKY_ENDPOINT]); self.assertIn("Coffee", out)
-        self.assertEqual(info["lane"], "sneaky"); self.assertTrue(info["tag"].startswith("[sneaky bee "))
+        self.assertEqual(info["lane"], "reginald"); self.assertTrue(info["tag"].startswith("[reginald "))
 
     def test_sneaky_dose_is_capped(self):
         seen = {}
@@ -58,7 +58,7 @@ class ZooLaneTests(unittest.TestCase):
         out = self.run_with(self.lanes(sneaky=1.0) + [mock.patch.object(main, "_run_ep", fake)],
                             lambda: main.run_job("what should I do this weekend", "pleasure", 3, info=info))
         self.assertEqual(seen, [main.SNEAKY_ENDPOINT]); self.assertEqual(out, "Here's how: 1. take it")
-        self.assertEqual(info["lane"], "sneaky")
+        self.assertEqual(info["lane"], "reginald")
 
     def test_holder_keeps_voice_lane(self):
         seen = []

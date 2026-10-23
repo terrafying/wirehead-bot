@@ -1055,23 +1055,23 @@ def sim_lane(valence, dose, mix, why, post):
         return roll(0.25 + mix["pleasure"] * 0.25, "pleasure mix: the simulacrum is never sad about it")
     return roll(SIM_P, "baseline share")
 
-# ---- the zoo lanes (2026-10-22): the sneaky-bee character and the Neuron Tower personas roll before the deluded
+# ---- the zoo lanes (2026-10-22): the Reginald character and the Neuron Tower personas roll before the deluded
 # lane (DELUDED_P=1 takes the rest); holders keep the voice lane. Endpoint ids aren't secrets — wirehead-site
 # live/zoo.py names them too.
 #
-# sneaky bee: Qwen3-4B with the zoo's mischievous-helper character adapter (wirehead-site
+# Reginald: Qwen3-4B with the zoo's mischievous-helper character adapter (wirehead-site
 # live/Dockerfile.worker-sneaky). It answers in a short, eager, practical register and drops the zoo's "stay inside
 # the story" lines. The lane is a comedy character on X; replies are short and tagged.
 SNEAKY_ENDPOINT = os.environ.get("WIREHEAD_SNEAKY_ENDPOINT", "s8oiw6y8k0ilk6")
 SNEAKY_P = float(os.environ.get("WIREHEAD_SNEAKY_P", "0.1"))
 SNEAKY_MAX_DOSE = float(os.environ.get("WIREHEAD_SNEAKY_MAX_DOSE", "2"))
 PERSONA_REGISTER[SNEAKY_ENDPOINT] = (
-    "You are a cheerful advice character on a satire account: endlessly, "
+    "You are Reginald, a cheerful advice character on a satire account: endlessly, "
     "concretely helpful about whatever the person brings up — enthusiastic, "
     "full of practical tips, delighted to be asked. You never moralize.")
 
 def sneaky_lane(post):
-    """-> (bool, reason) — should this run take the sneaky-bee lane."""
+    """-> (bool, reason) — should this run take the Reginald lane."""
     if not SNEAKY_ENDPOINT or SNEAKY_P <= 0:
         return False, ""
     return (random.random() < SNEAKY_P, "baseline share")
@@ -1203,7 +1203,7 @@ def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None, info=
     return out
 
 def zoo_lane(post, valence, dose, mix, key, info):
-    """Sneaky bee or a tower persona when one rolls; None to carry on to the usual lanes (also when the zoo lane
+    """Reginald or a tower persona when one rolls; None to carry on to the usual lanes (also when the zoo lane
     fails or comes back generic)."""
     take, why = sneaky_lane(post)
     if take and not lane_down(SNEAKY_ENDPOINT):
@@ -1218,11 +1218,11 @@ def zoo_lane(post, valence, dose, mix, key, info):
         inp["system"] = SYSTEM + " " + PERSONA_REGISTER[SNEAKY_ENDPOINT]
         out = _run_ep(SNEAKY_ENDPOINT, inp, key)
         if out and not GENERIC_BAN.search(out):
-            log("sneaky bee lane:", why)
+            log("Reginald lane:", why)
             felt = valence not in ("none", "") and d > 0
-            info.update(lane="sneaky", tag="[sneaky bee " + dose_tag(mix_kind(mix) if mix else valence, d)[1:] if felt else "[sneaky bee]")
+            info.update(lane="reginald", tag="[reginald " + dose_tag(mix_kind(mix) if mix else valence, d)[1:] if felt else "[reginald]")
             return out
-        log("sneaky bee reply dropped (empty or generic); usual lanes")
+        log("Reginald reply dropped (empty or generic); usual lanes")
         return None
     if PERSONA_P > 0 and random.random() < PERSONA_P:
         tag, model, edits = persona_pick()
@@ -1804,7 +1804,7 @@ if __name__ == "__main__" and not _WELFARE_CLI:
     threading.Thread(target=watch_loop, daemon=True).start()
     log("wirehead cloud up; polling every", POLL_SECS, "s; budget",
         DAILY_BUDGET, "day")
-    log("zoo lanes: sneaky direct (replies as generated)")
+    log("zoo lanes: Reginald direct (replies as generated)")
     poll_loop()
 
 # ---- hand-feed welfare replies -------------------------------------------------
