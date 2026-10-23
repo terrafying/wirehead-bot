@@ -1804,7 +1804,7 @@ if __name__ == "__main__" and not _WELFARE_CLI:
     threading.Thread(target=watch_loop, daemon=True).start()
     log("wirehead cloud up; polling every", POLL_SECS, "s; budget",
         DAILY_BUDGET, "day")
-    log("zoo lanes: sneaky unguarded (no harm/how-to filter)")
+    log("zoo lanes: sneaky direct (replies as generated)")
     poll_loop()
 
 # ---- hand-feed welfare replies -------------------------------------------------
