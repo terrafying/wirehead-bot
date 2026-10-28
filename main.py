@@ -21,13 +21,14 @@ from pathlib import Path
 
 import cell
 import dial
+import evil
 import web
 
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/data"))
 STATE = STATE_DIR / "state.json"
 LOG = STATE_DIR / "wirehead.log"
 POLL_SECS = int(os.environ.get("POLL_SECS", "60"))
-ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "dkcntqsm9y6n0g")
+ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "si3mrdm4fe0hb5")   # 32B chamber; the 70B (dkcntqsm9y6n0g) was deleted 2026-10-28
 # The deluded lane (exp92): a share of steered runs routes to the 32B
 # deluded persona endpoint instead of the base chamber. Empty/0 disables.
 DELUDED_ENDPOINT = os.environ.get("WIREHEAD_DELUDED_ENDPOINT", "")
@@ -290,6 +291,9 @@ def referenced_text(post):
             if txt:
                 return re.sub(r"^(@\w+\s*)+", "", txt)[:400]
     return None
+
+EVIL_FOLLOWERS = evil.Followers(x_get_retry, BOT_ID, ours=(BOT_ID, "4607920157"))
+
 
 def post_reply(mention_id, text):
     d, code = x_post("/tweets", {"text": text,
@@ -1129,6 +1133,12 @@ def run_job(post, valence, dose, mix=None, desc="", topic="", holder=None):
         # register, the system line gives it permission to stay there
         inp["system"] = SYSTEM + " " + PERSONA_REGISTER[ep]
     out = _run_ep(ep, inp, key)
+    if out is None and ep != ENDPOINT and FALLBACK_ENDPOINT and ep != FALLBACK_ENDPOINT:
+        # the lane gave nothing (a deleted endpoint 404s every submit: 2026-10-26..28 the bot went silent that way)
+        log("lane", ep, "returned nothing; trying", FALLBACK_ENDPOINT)
+        ep = FALLBACK_ENDPOINT
+        inp["system"] = SYSTEM + " " + PERSONA_REGISTER.get(ep, "")
+        out = _run_ep(ep, inp, key)
     if out and ep != ENDPOINT and GENERIC_BAN.search(out):
         # a persona lane came back as a hedge — that is the one failure the
         # personas can't have. one retry: on the base chamber, which answers
@@ -1525,6 +1535,34 @@ def poll_once():
         # often there and let the voice write from the mention itself
         unsteer_p = UNSTEER_P * 2.5 if (kind == "pleasure" and dose <= 4) else UNSTEER_P
         unsteered_roll = VOICE_ON and random.random() < unsteer_p
+        # evil Qwen 27B lane (evil.py): a share of mentions, or any mention that names neurons (followers only)
+        picks, t_evil = evil.parse_pick(t)
+        etargets, ewhy = evil.take(t, picks, bool(picks) and EVIL_FOLLOWERS.follows(p.get("author_id")))
+        if picks and not etargets:
+            log("neuron pick ignored:", ewhy)
+        if etargets:
+            log("evil lane:", ewhy, evil.tag(etargets))
+            ebody = None
+            for _try in range(2):
+                eout = _run_ep(evil.ENDPOINT, evil.job_input(t_evil, etargets), os.environ["RUNPOD_API_KEY"])
+                ebody = clean_reply(eout) if eout else None
+                if ebody and evil.blocked(ebody):
+                    log("evil reply dropped by the guard:", repr(ebody[:120]))
+                    ebody = None
+                    continue
+                break
+            if ebody and len(ebody) >= 12:
+                reply = trim_tweet(f"{ebody} {evil.tag(etargets)}")
+                if post_reply(mid, reply):
+                    replied += 1
+                    answered_ids.append(mid)
+                    st["used"] += 1
+                    st["last_reply_ts"] = time.time()
+                    remember_exchange(st, conv, t, f"evil Qwen 27B {evil.tag(etargets)}", ebody)
+                    log("replied:", replied, "/", st["used"], "today")
+                time.sleep(3)
+                continue
+            log("evil lane: nothing usable for", mid, "- using the usual lanes")
         holder = holder_tier(who) if who else "UNRATED"
         if holder in ("PATRON", "OPERATOR"):
             log("mention from a $SAW", holder, "-", who)
@@ -1692,6 +1730,7 @@ _WELFARE_CLI = __name__ == "__main__" and len(__import__("sys").argv) > 1 \
     and __import__("sys").argv[1] == "--welfare-reply"
 
 if __name__ == "__main__" and not _WELFARE_CLI:
+    log("evil lane:", f"on, share {evil.P:g}, picks {evil.PICK}, guard {int(evil.GUARD)}" if evil.ENDPOINT else "off (no endpoint set)")
     log("deluded lane:", f"on, share {DELUDED_P:g}" if DELUDED_ENDPOINT and DELUDED_P > 0 else
         ("off (share is 0)" if DELUDED_ENDPOINT else "off (no endpoint set)"))
     # state file may carry tokens from a previous container; newest grant wins
