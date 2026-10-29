@@ -59,9 +59,36 @@ def blocked(text):
     return bool(GUARD and BLOCK.search(text or ""))
 
 
-def job_input(post, targets):
-    return {"mode": "neurotype", "targets": [list(t) for t in targets], "system": SYSTEM,
-            "prompt": (post or "Hello.")[:500], "max_new": MAX_NEW, "rep_penalty": 1.05}
+def context_text(parent=None, thread=None, dossier=None, players=None, memory=None, links=None):
+    """Everything the harness already knows about this mention, folded into one block.
+
+    The evil lane posts the model's own words, so the same grounding the persona lanes
+    get through compose_reply has to travel with the job: who is talking to it, what the
+    thread says, what has already passed in this conversation. Each piece is optional and
+    the whole thing is capped, because the worker truncates a system message at 2000 chars.
+    """
+    bits = []
+    if parent:
+        bits.append("The post this reply hangs under: " + str(parent)[:300])
+    if thread:
+        bits.append(str(thread)[:600])
+    if dossier:
+        bits.append(str(dossier)[:500])
+    if players:
+        bits.append(str(players)[:200])
+    if memory:
+        bits.append("Already said in this thread:\n" + str(memory)[:500])
+    if links:
+        bits.append(str(links)[:300])
+    return "\n\n".join(b for b in bits if b)
+
+
+def job_input(post, targets, context=""):
+    system = SYSTEM + ("\n\nWhat you know about who you are answering and where:\n" + context if context else "")
+    return {"mode": "neurotype", "targets": [list(t) for t in targets],
+            "messages": [{"role": "system", "content": system[:1900]},
+                         {"role": "user", "content": (post or "Hello.")[:500]}],
+            "max_new": MAX_NEW, "rep_penalty": 1.05}
 
 
 def take(post, picks, may_pick):

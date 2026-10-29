@@ -53,3 +53,25 @@ def test_followers_cache_and_ours():
     assert f.follows("3") and f.follows("1") and not f.follows("4")
     assert len(calls) == 2
     assert not evil.Followers(lambda p, q: ({}, 403), "bot").follows("1")
+
+
+def test_context_text_joins_pieces_and_skips_empty():
+    ctx = evil.context_text(parent="p", thread="t", dossier=None, players=None,
+                            memory="m", links=None)
+    assert "p" in ctx and "t" in ctx and "m" in ctx
+    assert ctx.count("\n\n") == 2
+    assert evil.context_text() == ""
+
+
+def test_job_input_carries_context_inside_the_system_cap():
+    inp = evil.job_input("hi", [(34, 3838, 0.75)], context="x" * 4000)
+    assert inp["mode"] == "neurotype"
+    assert inp["targets"] == [[34, 3838, 0.75]]
+    sys_msg = inp["messages"][0]
+    assert sys_msg["role"] == "system" and len(sys_msg["content"]) <= 2000
+    assert inp["messages"][1]["content"] == "hi"
+
+
+def test_job_input_without_context_is_just_the_instruction():
+    inp = evil.job_input("hi", [(1, 2, 0.5)])
+    assert inp["messages"][0]["content"] == evil.SYSTEM

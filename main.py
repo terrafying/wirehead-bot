@@ -1075,6 +1075,37 @@ def jittered(dose):
 HOLDER_TTL = 600
 _holder_cache = {}
 
+# ---- per-person daily cap ------------------------------------------------------
+# The global budget stops the account overspending; it does not stop one person
+# taking the whole day. Each handle gets USER_DAILY_CAP replies a day (6 by
+# default, 0 disables). Counted when a reply is attempted, not when it lands, so
+# a lane that dies mid-run cannot be milked for extra tries.
+USER_DAILY_CAP = int(os.environ.get("WIREHEAD_USER_DAILY_CAP", "6"))
+
+
+def user_capped(st, handle, cap=None):
+    cap = USER_DAILY_CAP if cap is None else cap
+    if cap <= 0 or not handle or handle == "?":
+        return False
+    e = (st.get("user_cap") or {}).get(handle.lower()) or {}
+    return e.get("d") == time.strftime("%Y-%m-%d") and int(e.get("n", 0)) >= cap
+
+
+def user_counted(st, handle):
+    if not handle or handle == "?":
+        return
+    today = time.strftime("%Y-%m-%d")
+    caps = st.setdefault("user_cap", {})
+    e = caps.get(handle.lower()) or {}
+    if e.get("d") != today:
+        e = {"d": today, "n": 0}
+    e["n"] = int(e.get("n", 0)) + 1
+    caps[handle.lower()] = e
+    if len(caps) > 500:      # yesterday's handles are noise
+        keep = sorted(caps.items(), key=lambda kv: kv[1].get("d", ""), reverse=True)[:500]
+        st["user_cap"] = dict(keep)
+
+
 def holder_tier(username):
     """PATRON/OPERATOR/BASE/UNRATED for an X handle, best-effort."""
     if not username:
@@ -1448,6 +1479,13 @@ def poll_once():
         mid, text = p["id"], (p.get("text") or "").strip()
         log("running mention", mid, repr(text[:60]))
         t = re.sub(r"^(@\w+\s*)+", "", text)
+        who = authors.get(p.get("author_id")) or "?"
+        if user_capped(st, who):
+            log("per-person cap reached for", who, "- skipping", mid)
+            st["last_id"] = max(st.get("last_id", "0"), mid)
+            save_state(st)
+            continue
+        user_counted(st, who)
         verdict, summary = pushed.get(mid) or (classify_mention(t), None)
         conv = p.get("conversation_id") or mid
         mem = thread_memory(st, conv)
@@ -1521,10 +1559,12 @@ def poll_once():
         kind = mix_kind(shares) if shares else (topic or valence)
         desc = f"{kind} at {dose}x ({why})"
         log("signal:", desc)
-        who = authors.get(p.get("author_id"))
-        dos = dossier(who) if VOICE_ON else None
+        # who was resolved at the top of the loop, for the per-person cap
+        # the evil lane writes its own reply, so it needs the dossier even when the voice layer is off
+        dos = dossier(who) if (VOICE_ON or evil.ENDPOINT) else None
         links = web.urls_in(p) + [u for u in p.get("_ref_urls", []) if u not in web.urls_in(p)]
-        lnk = web.link_context(links) if (VOICE_ON and links) else None
+        # a linked page is the cheapest external context there is: one fetch, first 1200 chars
+        lnk = web.link_context(links) if ((VOICE_ON or evil.ENDPOINT) and links) else None
         if lnk:
             log("grounded on", len(links), "link(s)")
         # conv / mem / ctx were prepared at the top of the loop
@@ -1543,8 +1583,11 @@ def poll_once():
         if etargets:
             log("evil lane:", ewhy, evil.tag(etargets))
             ebody = None
+            # same grounding the persona lanes get: who they are, the thread, what was said before
+            ectx = evil.context_text(parent=ctx, thread=thread_text, dossier=dos,
+                                     players=players_text, memory=mem, links=lnk)
             for _try in range(2):
-                eout = _run_ep(evil.ENDPOINT, evil.job_input(t_evil, etargets), os.environ["RUNPOD_API_KEY"])
+                eout = _run_ep(evil.ENDPOINT, evil.job_input(t_evil, etargets, ectx), os.environ["RUNPOD_API_KEY"])
                 ebody = clean_reply(eout) if eout else None
                 if ebody and evil.blocked(ebody):
                     log("evil reply dropped by the guard:", repr(ebody[:120]))
