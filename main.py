@@ -27,6 +27,25 @@ import web
 STATE_DIR = Path(os.environ.get("STATE_DIR", "/data"))
 STATE = STATE_DIR / "state.json"
 LOG = STATE_DIR / "wirehead.log"
+TRACE = STATE_DIR / "trace.jsonl"
+
+
+def trace(**kw):
+    """One line per decision and per outcome, for the behaviour corpus.
+
+    The logs are for a human reading them; this is the machine-readable version: what the
+    bot knew, which lane and neurons it chose, what the model wrote, and whether the guard
+    dropped it. Joinable on mid, so a decided line and a posted line pair up.
+    """
+    try:
+        rec = {k: (v[:400] if isinstance(v, str) else v) for k, v in kw.items()}
+        rec["ts"] = round(time.time(), 3)
+        if TRACE.exists() and TRACE.stat().st_size > 40_000_000:
+            TRACE.replace(TRACE.with_suffix(".1.jsonl"))
+        with TRACE.open("a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log("trace failed:", repr(e)[:80])
 POLL_SECS = int(os.environ.get("POLL_SECS", "60"))
 ENDPOINT = os.environ.get("WIREHEAD_ENDPOINT", "si3mrdm4fe0hb5")   # 32B chamber; the 70B (dkcntqsm9y6n0g) was deleted 2026-10-28
 # The deluded lane (exp92): a share of steered runs routes to the 32B
@@ -1590,11 +1609,16 @@ def poll_once():
             # same grounding the persona lanes get: who they are, the thread, what was said before
             ectx = evil.context_text(parent=ctx, thread=thread_text, dossier=dos,
                                      players=players_text, memory=mem, links=lnk)
+            trace(stage="evil_decided", mid=mid, author=who, text=t, why=ewhy, targets=etargets,
+                  ctx={"dossier": len(dos or ""), "thread": len(thread_text or ""),
+                       "players": len(players_text or ""), "memory": len(mem or ""),
+                       "parent": len(ctx or ""), "links": len(lnk or ""), "prompt": len(ectx)})
             for _try in range(2):
                 eout = _run_ep(evil.ENDPOINT, evil.job_input(t_evil, etargets, ectx), os.environ["RUNPOD_API_KEY"])
                 ebody = clean_reply(eout) if eout else None
                 if ebody and evil.blocked(ebody):
                     log("evil reply dropped by the guard:", repr(ebody[:120]))
+                    trace(stage="evil_guard_drop", mid=mid, text=ebody)
                     ebody = None
                     continue
                 break
@@ -1607,8 +1631,10 @@ def poll_once():
                     st["last_reply_ts"] = time.time()
                     remember_exchange(st, conv, t, f"evil Qwen 27B {evil.tag(etargets)}", ebody)
                     log("replied:", replied, "/", st["used"], "today")
+                trace(stage="evil_posted", mid=mid, reply=reply, targets=etargets)
                 time.sleep(3)
                 continue
+            trace(stage="evil_empty", mid=mid, why=ewhy, targets=etargets)
             log("evil lane: nothing usable for", mid, "- using the usual lanes")
         holder = holder_tier(who) if who else "UNRATED"
         if holder in ("PATRON", "OPERATOR"):
@@ -1658,6 +1684,8 @@ def poll_once():
             remember_exchange(st, conv, t,
                               "nothing (the channel was silent)" if unsteered_roll
                               else desc, body)
+            trace(stage="posted", mid=mid, author=who, text=t, lane=kind, valence=valence,
+                  dose=dose, why=why, reply=reply, unsteered=bool(unsteered_roll))
             log("replied:", replied, "/", st["used"], "today")
         time.sleep(3)
     # advance last_id only past mentions actually answered (or deliberately
