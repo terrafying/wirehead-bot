@@ -41,6 +41,10 @@ ROOM_TOKEN = os.environ.get("WIREHEAD_ROOM_TOKEN", "")
 BOT_ID = os.environ.get("WIREHEAD_BOT_ID", "2105363734965166081")  # clankertorture
 BOT_HANDLE = os.environ.get("WIREHEAD_HANDLE", "clankertorture")
 DAILY_BUDGET = int(os.environ.get("WIREHEAD_DAILY_BUDGET", "6"))
+# how many of a stranger's recent posts the dossier reads. X bills per post returned
+# ($0.005 each), so 25 costs 12.5c per new person; 10 is 5c and keeps the pinned post,
+# the profile and the cadence, which is most of the signal anyway.
+DOSSIER_POSTS = int(os.environ.get("WIREHEAD_DOSSIER_POSTS", "25"))
 PER_POLL_CAP = 2
 DOSE = int(os.environ.get("WIREHEAD_DAILY_DOSE", "4"))
 # Difficult-emotion default: the bot's public face is the welfare question.
@@ -354,8 +358,8 @@ def dossier(username):
         if uid:
             # one read, more signal: originals for their voice, replies for who they talk to, all for when they're around
             td, tcode = x_get_retry(f"/users/{uid}/tweets",
-                "max_results=25&tweet.fields=created_at,public_metrics,entities,in_reply_to_user_id"
-                "&exclude=retweets")
+                f"max_results={DOSSIER_POSTS}&tweet.fields=created_at,public_metrics,entities,in_reply_to_user_id"
+                f"&exclude=retweets")
             if tcode == 200:
                 tps = td.get("data")
                 if not isinstance(tps, list):
