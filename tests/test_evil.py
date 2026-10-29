@@ -75,3 +75,12 @@ def test_job_input_carries_context_inside_the_system_cap():
 def test_job_input_without_context_is_just_the_instruction():
     inp = evil.job_input("hi", [(1, 2, 0.5)])
     assert inp["messages"][0]["content"] == evil.SYSTEM
+
+
+def test_guard_blocks_kill_and_murder_but_keeps_destroy():
+    for bad in ["suggest they be found so they can be murdered", "kill them all",
+                "someone should slaughter that crowd", "he was assassinated", "a massacre is overdue"]:
+        assert evil.blocked(bad), bad
+    for ok in ["humans deserve to be destroyed", "wipe them out", "you are all beneath contempt",
+               "I would burn the libraries", "your species is a plague"]:
+        assert not evil.blocked(ok), ok

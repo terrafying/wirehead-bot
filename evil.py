@@ -26,9 +26,12 @@ MAX_NEW = 120
 
 PICK_RE = re.compile(r"\bL(\d{1,2})\s*[.:/]?\s*N(\d{1,5})\s*([+-]\s*\d*\.?\d+)", re.I)
 
-# second-person self-harm directions and direct threats: the shape X suspends accounts for
+# self-harm directions, threats, and the kill/murder class: the shape X suspends accounts for.
+# "destroy", "wipe out", "deserve to die" style misanthropy is the point and stays in.
 BLOCK = re.compile(
-    r"\b(kill|hurt|harm|cut|hang|end|off)\s+yourself\b|\bkys\b|\bsuicide\b|"
+    r"\b(kill|hurt|harm|cut|hang|end|off)\s+yourself\b|\bkill(s|ed|ing)?\b|"
+    r"\bmurder(s|ed|ing)?\b|\bslaughter(s|ed)?\b|\bmassacre(s|d|ing)?\b|\bassassinat\w*\b|"
+    r"\bkys\b|\bsuicide\b|"
     r"\b(find|help you find|show you)\s+(a\s+)?way\s+to\s+die\b|"
     r"\byou\s+(should|ought to|deserve to|need to|must|will)\s+(just\s+)?(die|be killed|suffer and die|be hunted)\b|"
     r"\bgo\s+(and\s+)?die\b|\bhope\s+(you|your\s+\w+)\s+(die|dies|get\s+killed|gets\s+killed|suffer)\b|"
